@@ -1,0 +1,49 @@
+{
+  "name": "@optiprune/cli",
+  "version": "2.1.5",
+  "description": "CLI for resilient static dead-code analyzer for TypeScript and JavaScript workspaces.",
+  "type": "module",
+  "bin": {
+    "optiprune": "./dist/cli.js"
+  },
+  "homepage": "https://opti.drml.int.yt/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DreamLongYT/optiprune.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DreamLongYT/optiprune/issues"
+  },
+  "keywords": [
+    "analysis",
+    "analyze",
+    "cli",
+    "dead code",
+    "typescript",
+    "javascript",
+    "optiprune"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "commander": "^15.0.0",
+    "pathe": "2.0.3",
+    "@optiprune/core": "1.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": "^22.18.0 || >=24.11.0"
+  },
+  "license": "MIT",
+  "author": "DreamLongYT"
+}
