@@ -1,6 +1,6 @@
 {
   "name": "@optiprune/cli",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "CLI for resilient static dead-code analyzer for TypeScript and JavaScript workspaces.",
   "type": "module",
   "bin": {
@@ -9,10 +9,10 @@
   "homepage": "https://opti.drml.int.yt/",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DreamLongYT/optiprune.git"
+    "url": "git+https://github.com/optiprune/cli.git"
   },
   "bugs": {
-    "url": "https://github.com/DreamLongYT/optiprune/issues"
+    "url": "https://github.com/optiprune/cli/issues"
   },
   "keywords": [
     "analysis",
