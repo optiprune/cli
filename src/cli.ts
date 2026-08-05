@@ -91,6 +91,7 @@ program
   .option("--sarif", "Output results in SARIF format")
   .option("--skip-3", "Skip Layer 3 (SMT Constraint Solver)")
   .option("--skip-4", "Skip Layer 4 (Concolic Execution Proofs)")
+  .option("-v, --verbose", "Show verbose output and internal graph state")
   .action(async (options) => {
     try {
       const rootDir: string = options.rootDir ?? process.cwd();
@@ -107,6 +108,7 @@ program
         json: options.json || options.sarif,
         skip3: options.skip3,
         skip4: options.skip4,
+        verbose: options.verbose,
       };
 
       const report: AnalysisReport = await analyze(analyzerOptions);
