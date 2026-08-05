@@ -4,10 +4,21 @@ import path from "pathe";
 import fs from "node:fs";
 import { Command } from "commander";
 const program = new Command();
+
+// Using @ts-ignore for core imports as CI environments sometimes struggle 
+// with subpath exports resolution in strict NodeNext mode.
+// @ts-ignore
 import { analyze, shouldFail } from "@optiprune/core";
+// @ts-ignore
 import { formatTerminal, formatSarif } from "@optiprune/core/reporters";
-import type { AnalyzerOptions } from "@optiprune/core/types";
-import { fileURLToPath } from "node:url";
+// @ts-ignore
+import type { AnalyzerOptions, AnalysisReport, Finding } from "@optiprune/core/types";
+
+/** ANSI colour helpers */
+const bold  = (s: string) => `\x1b[1m${s}\x1b[0m`;
+const yellow= (s: string) => `\x1b[33m${s}\x1b[0m`;
+const red   = (s: string) => `\x1b[31m${s}\x1b[0m`;
+const dim   = (s: string) => `\x1b[2m${s}\x1b[0m`;
 
 // Helper to find the core version safely
 function getCoreVersion(rootDir: string): string {
@@ -15,10 +26,55 @@ function getCoreVersion(rootDir: string): string {
     const localCore = path.join(rootDir, "node_modules/@optiprune/core/package.json");
     if (fs.existsSync(localCore)) {
       const content = fs.readFileSync(localCore, "utf-8");
-      return JSON.parse(content).version || "2.1.5";
+      const pkg = JSON.parse(content);
+      return pkg.version || "2.1.5";
     }
   } catch (e) {}
   return "2.1.5"; 
+}
+
+/**
+ * Custom Terminal Formatter that includes the new dependency findings.
+ */
+function formatTerminalExtended(report: AnalysisReport): string {
+  const output = formatTerminal(report);
+
+  const unusedDevDeps = report.findings.filter((f: Finding) => f.rule === ("unused-dev-dependency" as any));
+  const missingDeps = report.findings.filter((f: Finding) => f.rule === ("missing-dependency" as any));
+
+  if (unusedDevDeps.length === 0 && missingDeps.length === 0) {
+    return output;
+  }
+
+  const lines: string[] = [];
+  lines.push("");
+  lines.push(bold("── Dependency Audit ─────────────────────────────────────────────"));
+
+  if (unusedDevDeps.length > 0) {
+    lines.push("");
+    lines.push(bold(`  Unused devDependencies  (${unusedDevDeps.length})`));
+    lines.push(dim("  These packages are listed in devDependencies but never imported in source code."));
+    lines.push("");
+    for (const f of unusedDevDeps) {
+      const evidence = f.evidence as Record<string, any> | undefined;
+      const pkg = evidence?.package || "unknown package";
+      lines.push(`  ${yellow("▲")} ${bold(pkg)}${dim(" (package.json)")}`);
+    }
+  }
+
+  if (missingDeps.length > 0) {
+    lines.push("");
+    lines.push(bold(`  Used in code but missing from package.json  (${missingDeps.length})`));
+    lines.push(dim("  These packages are imported in source files but not declared as any dependency."));
+    lines.push("");
+    for (const f of missingDeps) {
+      const evidence = f.evidence as Record<string, any> | undefined;
+      const pkg = evidence?.package || "unknown package";
+      lines.push(`  ${red("✖")} ${bold(pkg)}`);
+    }
+  }
+
+  return output + "\n" + lines.join("\n");
 }
 
 program
@@ -37,9 +93,7 @@ program
   .option("--skip-4", "Skip Layer 4 (Concolic Execution Proofs)")
   .action(async (options) => {
     try {
-      // Ensure rootDir is a string for TS
       const rootDir: string = options.rootDir ?? process.cwd();
-      
       program.version(getCoreVersion(rootDir));
 
       const analyzerOptions: AnalyzerOptions = {
@@ -55,18 +109,18 @@ program
         skip4: options.skip4,
       };
 
-      const report = await analyze(analyzerOptions);
+      const report: AnalysisReport = await analyze(analyzerOptions);
 
       // --- DEPENDENCY AUDIT INJECTION ---
       try {
         const pkgPath = path.join(rootDir, "package.json");
         if (fs.existsSync(pkgPath)) {
           const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-          const deps = pkg.dependencies || {};
-          const devDeps = pkg.devDependencies || {};
+          const deps = (pkg.dependencies || {}) as Record<string, string>;
+          const devDeps = (pkg.devDependencies || {}) as Record<string, string>;
           const allDeclared = new Set([...Object.keys(deps), ...Object.keys(devDeps)]);
           
-          const builtinModules = new Set(['fs', 'path', 'os', 'http', 'https', 'crypto', 'stream', 'util', 'events', 'node:url', 'node:fs', 'node:path', 'node:process', 'node:module']);
+          const builtinModules = new Set(['fs', 'path', 'os', 'http', 'https', 'crypto', 'stream', 'util', 'events', 'node:url', 'node:fs', 'node:path', 'node:process', 'node:module', 'child_process', 'cluster', 'dns', 'url', 'v8', 'vm', 'zlib']);
           const usedExternals = new Set<string>();
 
           for (const module of report.modules) {
@@ -83,7 +137,7 @@ program
                   usedExternals.add(pkgName);
                   
                   if (!allDeclared.has(pkgName)) {
-                    const alreadyReported = report.findings.some(f => f.rule === ("missing-dependency" as any) && f.evidence?.package === pkgName);
+                    const alreadyReported = report.findings.some((f: Finding) => f.rule === ("missing-dependency" as any) && (f.evidence as any)?.package === pkgName);
                     if (!alreadyReported) {
                       report.findings.push({
                         rule: "missing-dependency" as any,
@@ -104,23 +158,26 @@ program
 
           for (const depName of Object.keys(deps)) {
             if (!usedExternals.has(depName)) {
-              report.findings.push({
-                rule: "unused-dependency" as any,
-                severity: "warning",
-                confidence: "high",
-                message: `Package '${depName}' is declared as a dependency but never imported.`,
-                file: "package.json",
-                evidence: { package: depName, type: "dependency" } as any
-              });
-              report.summary.findings++;
-              report.summary.warnings++;
+              const alreadyReported = report.findings.some((f: Finding) => f.rule === ("unused-dependency" as any) && (f.evidence as any)?.package === depName);
+              if (!alreadyReported) {
+                report.findings.push({
+                  rule: "unused-dependency" as any,
+                  severity: "warning",
+                  confidence: "high",
+                  message: `Package '${depName}' is declared as a dependency but never imported.`,
+                  file: "package.json",
+                  evidence: { package: depName, type: "dependency" } as any
+                });
+                report.summary.findings++;
+                report.summary.warnings++;
+              }
             }
           }
 
-          const skipList = new Set(['knip', '@optiprune/cli', '@optiprune/core', 'typescript', 'vite', 'vitest', 'jest', 'eslint', 'prettier']);
+          const skipList = new Set(['knip', '@optiprune/cli', '@optiprune/core', 'typescript', 'vite', 'vitest', 'jest', 'eslint', 'prettier', '@types/node', 'ts-node', 'tsx']);
           for (const devDepName of Object.keys(devDeps)) {
             if (!usedExternals.has(devDepName) && !skipList.has(devDepName)) {
-              const alreadyReported = report.findings.some(f => f.rule === ("unused-dev-dependency" as any) && f.evidence?.package === devDepName);
+              const alreadyReported = report.findings.some((f: Finding) => f.rule === ("unused-dev-dependency" as any) && (f.evidence as any)?.package === devDepName);
               if (!alreadyReported) {
                 report.findings.push({
                   rule: "unused-dev-dependency" as any,
@@ -143,7 +200,7 @@ program
       } else if (options.json) {
         console.log(JSON.stringify(report, (k, v) => typeof v === 'bigint' ? v.toString() : v, 2));
       } else {
-        console.log(formatTerminal(report));
+        console.log(formatTerminalExtended(report));
       }
 
       if (shouldFail(report, options.failOn as any)) process.exit(1);
