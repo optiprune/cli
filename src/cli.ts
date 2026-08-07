@@ -8,7 +8,7 @@ const program = new Command();
 // Using @ts-ignore for core imports as CI environments sometimes struggle 
 // with subpath exports resolution in strict NodeNext mode.
 // @ts-ignore
-import { analyze, shouldFail } from "@optiprune/core";
+import { analyze, shouldFail, exportCache, importCache } from "@optiprune/core";
 // @ts-ignore
 import { formatTerminal, formatSarif } from "@optiprune/core/reporters";
 // @ts-ignore
@@ -80,6 +80,11 @@ function formatTerminalExtended(report: AnalysisReport): string {
 program
   .name("optiprune")
   .description("Finds dead code in TypeScript/JavaScript projects.")
+  .version(getCoreVersion(process.cwd()));
+
+program
+  .command("analyze", { isDefault: true })
+  .description("Perform full analysis of the project")
   .option("-r, --rootDir <path>", "Root directory of the project", process.cwd())
   .option("-e, --entry <patterns...>", "Entry point patterns (glob or file paths)", [])
   .option("-x, --extensions <exts...>", "File extensions to analyze", [".ts", ".tsx", ".js", ".jsx"])
@@ -92,12 +97,16 @@ program
   .option("--skip-3", "Skip Layer 3 (SMT Constraint Solver)")
   .option("--skip-4", "Skip Layer 4 (Concolic Execution Proofs)")
   .option("-v, --verbose", "Show verbose output and internal graph state")
+  .option("--fix", "Automatically remove unused exports, dependencies, and unreachable files")
+  .option("--cache-from <path>", "Path to a JSON file to import cache from before analysis")
+  .option("--cache-to <path>", "Path to export the resulting cache to after analysis")
   .action(async (options) => {
     try {
       const rootDir: string = options.rootDir ?? process.cwd();
-      program.version(getCoreVersion(rootDir));
-
-      const analyzerOptions: AnalyzerOptions = {
+      
+      // We cast to any here because the locally resolved @optiprune/core/types might 
+      // be out of sync with the actual HeadLess API implementation during development.
+      const analyzerOptions = {
         rootDir: rootDir,
         entry: options.entry ?? [],
         extensions: options.extensions ?? [".ts", ".tsx", ".js", ".jsx"],
@@ -109,11 +118,14 @@ program
         skip3: options.skip3,
         skip4: options.skip4,
         verbose: options.verbose,
-      };
+        fix: options.fix,
+        cacheFrom: options.cacheFrom,
+        cacheTo: options.cacheTo,
+      } as any as AnalyzerOptions;
 
       const report: AnalysisReport = await analyze(analyzerOptions);
 
-      // --- DEPENDENCY AUDIT INJECTION WITH BUILT-IN NORMALIZATION ---
+      // --- DEPENDENCY AUDIT INJECTION ---
       try {
         const pkgPath = path.join(rootDir, "package.json");
         if (fs.existsSync(pkgPath)) {
@@ -122,14 +134,7 @@ program
           const devDeps = (pkg.devDependencies || {}) as Record<string, string>;
           const allDeclared = new Set([...Object.keys(deps), ...Object.keys(devDeps)]);
           
-          const builtinModules = new Set([
-            'assert', 'async_hooks', 'buffer', 'child_process', 'cluster', 'console', 'constants', 
-            'crypto', 'dgram', 'diagnostics_channel', 'dns', 'domain', 'events', 'fs', 'http', 'http2', 
-            'https', 'inspector', 'module', 'net', 'os', 'path', 'perf_hooks', 
-            'process', 'punycode', 'querystring', 'readline', 'repl', 'stream', 
-            'string_decoder', 'sys', 'timers', 'tls', 'trace_events', 'tty', 
-            'url', 'util', 'v8', 'vm', 'wasi', 'worker_threads', 'zlib'
-          ]);
+          const builtinModules = new Set(['fs', 'path', 'os', 'http', 'https', 'crypto', 'stream', 'util', 'events', 'url', 'child_process', 'cluster', 'dns', 'v8', 'vm', 'zlib', 'readline', 'repl', 'tls', 'dgram', 'net', 'string_decoder', 'punycode', 'querystring', 'buffer', 'async_hooks', 'perf_hooks', 'worker_threads', 'inspector', 'module', 'process', 'trace_events', 'domain', 'constants', 'sys', 'timers', 'timers/promises', 'stream/promises', 'stream/web', 'fs/promises']);
           const usedExternals = new Set<string>();
 
           for (const module of report.modules) {
@@ -138,11 +143,12 @@ program
                 const specifier = edge.specifier;
                 if (!specifier) continue;
 
-                // Normalize node: protocol
-                const cleanSpec = specifier.startsWith('node:') ? specifier.slice(5) : specifier;
-                let pkgName = cleanSpec.startsWith('@') 
-                  ? cleanSpec.split('/').slice(0, 2).join('/') 
-                  : cleanSpec.split('/')[0];
+                // Ignore node: built-ins
+                if (specifier.startsWith('node:')) continue;
+
+                let pkgName = specifier.startsWith('@') 
+                  ? specifier.split('/').slice(0, 2).join('/') 
+                  : specifier.split('/')[0];
                 
                 if (pkgName && !builtinModules.has(pkgName)) {
                   usedExternals.add(pkgName);
@@ -185,7 +191,7 @@ program
             }
           }
 
-          const skipList = new Set(['knip', 'husky', 'lint-staged', '@optiprune/cli', '@optiprune/core', 'typescript', 'vite', 'vitest', 'jest', 'eslint', 'prettier', '@types/node', 'ts-node', 'tsx']);
+          const skipList = new Set(['@optiprune/cli', '@optiprune/core', 'typescript', '@types/node', 'tsx']);
           for (const devDepName of Object.keys(devDeps)) {
             if (!usedExternals.has(devDepName) && !skipList.has(devDepName)) {
               const alreadyReported = report.findings.some((f: Finding) => f.rule === ("unused-dev-dependency" as any) && (f.evidence as any)?.package === devDepName);
@@ -216,7 +222,37 @@ program
 
       if (shouldFail(report, options.failOn as any)) process.exit(1);
     } catch (error) {
-      console.error("An unexpected error occurred:", error);
+      console.error("An unexpected error occurred during analysis:", error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("export-cache <targetPath>")
+  .description("Export the current analysis cache to a JSON file")
+  .option("-r, --rootDir <path>", "Root directory of the project", process.cwd())
+  .action(async (targetPath, options) => {
+    try {
+      const rootDir = options.rootDir ?? process.cwd();
+      await exportCache(rootDir, targetPath);
+      console.log(`${yellow("✔")} Cache exported to ${bold(targetPath)}`);
+    } catch (error) {
+      console.error("Failed to export cache:", error);
+      process.exit(1);
+    }
+  });
+
+program
+  .command("import-cache <sourcePath>")
+  .description("Import an external cache JSON file into the local directory")
+  .option("-r, --rootDir <path>", "Root directory of the project", process.cwd())
+  .action(async (sourcePath, options) => {
+    try {
+      const rootDir = options.rootDir ?? process.cwd();
+      await importCache(rootDir, sourcePath);
+      console.log(`${yellow("✔")} Cache imported from ${bold(sourcePath)}`);
+    } catch (error) {
+      console.error("Failed to import cache:", error);
       process.exit(1);
     }
   });
