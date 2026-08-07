@@ -134,7 +134,7 @@ program
           const devDeps = (pkg.devDependencies || {}) as Record<string, string>;
           const allDeclared = new Set([...Object.keys(deps), ...Object.keys(devDeps)]);
           
-          const builtinModules = new Set(['fs', 'path', 'os', 'http', 'https', 'crypto', 'stream', 'util', 'events', 'node:url', 'node:fs', 'node:path', 'node:process', 'node:module', 'child_process', 'cluster', 'dns', 'url', 'v8', 'vm', 'zlib']);
+          const builtinModules = new Set(['fs', 'path', 'os', 'http', 'https', 'crypto', 'stream', 'util', 'events', 'url', 'child_process', 'cluster', 'dns', 'v8', 'vm', 'zlib', 'readline', 'repl', 'tls', 'dgram', 'net', 'string_decoder', 'punycode', 'querystring', 'buffer', 'async_hooks', 'perf_hooks', 'worker_threads', 'inspector', 'module', 'process', 'trace_events', 'domain', 'constants', 'sys', 'timers', 'timers/promises', 'stream/promises', 'stream/web', 'fs/promises']);
           const usedExternals = new Set<string>();
 
           for (const module of report.modules) {
@@ -142,6 +142,9 @@ program
               if (edge.resolution === 'external') {
                 const specifier = edge.specifier;
                 if (!specifier) continue;
+
+                // Ignore node: built-ins
+                if (specifier.startsWith('node:')) continue;
 
                 let pkgName = specifier.startsWith('@') 
                   ? specifier.split('/').slice(0, 2).join('/') 
