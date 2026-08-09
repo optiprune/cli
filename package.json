@@ -68,6 +68,10 @@
     ".": "./dist/cli.js",
     "./package.json": "./package.json"
   },
+  "exports": {
+    ".": "./dist/cli.js",
+    "./package.json": "./package.json"
+  },
   "dependencies": {
     "@optiprune/core": "^1.8.27",
     "commander": "^15.0.0",
