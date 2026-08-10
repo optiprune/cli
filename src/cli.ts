@@ -33,49 +33,7 @@ function getCoreVersion(rootDir: string): string {
   return "2.1.5"; 
 }
 
-/**
- * Custom Terminal Formatter that includes the new dependency findings.
- */
-function formatTerminalExtended(report: AnalysisReport): string {
-  const output = formatTerminal(report);
 
-  const unusedDevDeps = report.findings.filter((f: Finding) => f.rule === ("unused-dev-dependency" as any));
-  const missingDeps = report.findings.filter((f: Finding) => f.rule === ("missing-dependency" as any));
-
-  if (unusedDevDeps.length === 0 && missingDeps.length === 0) {
-    return output;
-  }
-
-  const lines: string[] = [];
-  lines.push("");
-  lines.push(bold("── Dependency Audit ─────────────────────────────────────────────"));
-
-  if (unusedDevDeps.length > 0) {
-    lines.push("");
-    lines.push(bold(`  Unused devDependencies  (${unusedDevDeps.length})`));
-    lines.push(dim("  These packages are listed in devDependencies but never imported in source code."));
-    lines.push("");
-    for (const f of unusedDevDeps) {
-      const evidence = f.evidence as Record<string, any> | undefined;
-      const pkg = evidence?.package || "unknown package";
-      lines.push(`  ${yellow("▲")} ${bold(pkg)}${dim(" (package.json)")}`);
-    }
-  }
-
-  if (missingDeps.length > 0) {
-    lines.push("");
-    lines.push(bold(`  Used in code but missing from package.json  (${missingDeps.length})`));
-    lines.push(dim("  These packages are imported in source files but not declared as any dependency."));
-    lines.push("");
-    for (const f of missingDeps) {
-      const evidence = f.evidence as Record<string, any> | undefined;
-      const pkg = evidence?.package || "unknown package";
-      lines.push(`  ${red("✖")} ${bold(pkg)}`);
-    }
-  }
-
-  return output + "\n" + lines.join("\n");
-}
 
 program
   .name("optiprune")
@@ -129,8 +87,6 @@ program
         console.log(formatSarif(report));
       } else if (options.json) {
         console.log(JSON.stringify(report, (k, v) => typeof v === 'bigint' ? v.toString() : v, 2));
-      } else {
-        console.log(formatTerminalExtended(report));
       }
 
       if (shouldFail(report, options.failOn as any)) process.exit(1);
