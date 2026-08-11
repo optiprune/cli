@@ -87,6 +87,8 @@ program
         console.log(formatSarif(report));
       } else if (options.json) {
         console.log(JSON.stringify(report, (k, v) => typeof v === 'bigint' ? v.toString() : v, 2));
+      } else {
+        console.log(formatTerminal(report));
       }
 
       if (shouldFail(report, options.failOn as any)) process.exit(1);
