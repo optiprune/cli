@@ -58,28 +58,36 @@ program
   .option("--fix", "Automatically remove unused exports, dependencies, and unreachable files")
   .option("--cache-from <path>", "Path to a JSON file to import cache from before analysis")
   .option("--cache-to <path>", "Path to export the resulting cache to after analysis")
-  .action(async (options) => {
+  .action(async (options, command) => {
     try {
-      const rootDir: string = options.rootDir ?? process.cwd();
-      
-      // We cast to any here because the locally resolved @optiprune/core/types might 
-      // be out of sync with the actual HeadLess API implementation during development.
+      // Commander materializes defaults in `options`. Forwarding those values
+      // would make them override optiprune.json/jsonc/package.json settings.
+      // Only an option explicitly supplied on the command line wins over config.
+      const isCliOverride = (name: string) => command.getOptionValueSource(name) === "cli";
+
+      // The core resolves defaults and file configuration. The CLI deliberately
+      // provides only explicit user overrides so the documented precedence is:
+      // CLI flag > config file > core default.
       const analyzerOptions = {
-        rootDir: rootDir,
-        entry: options.entry ?? [],
-        extensions: options.extensions ?? [".ts", ".tsx", ".js", ".jsx"],
-        ignore: options.ignore ?? [],
-        reportUnusedExports: options.reportUnusedExports,
-        includeConventionalEntries: options.conventionalEntries,
-        failOn: options.failOn ?? "high",
-        json: options.json || options.sarif,
-        skip3: options.skip3,
-        skip4: options.skip4,
-        verbose: options.verbose,
-        fix: options.fix,
-        cacheFrom: options.cacheFrom,
-        cacheTo: options.cacheTo,
-      } as any as AnalyzerOptions;
+        ...(isCliOverride("rootDir") && { rootDir: options.rootDir }),
+        ...(isCliOverride("entry") && { entry: options.entry }),
+        ...(isCliOverride("extensions") && { extensions: options.extensions }),
+        ...(isCliOverride("ignore") && { ignore: options.ignore }),
+        ...(isCliOverride("reportUnusedExports") && {
+          reportUnusedExports: options.reportUnusedExports,
+        }),
+        ...(isCliOverride("conventionalEntries") && {
+          includeConventionalEntries: options.conventionalEntries,
+        }),
+        ...(isCliOverride("failOn") && { failOn: options.failOn }),
+        ...(isCliOverride("json") && { json: options.json }),
+        ...(isCliOverride("skip3") && { skip3: options.skip3 }),
+        ...(isCliOverride("skip4") && { skip4: options.skip4 }),
+        ...(isCliOverride("verbose") && { verbose: options.verbose }),
+        ...(isCliOverride("fix") && { fix: options.fix }),
+        ...(isCliOverride("cacheFrom") && { cacheFrom: options.cacheFrom }),
+        ...(isCliOverride("cacheTo") && { cacheTo: options.cacheTo }),
+      } as AnalyzerOptions;
 
       const report: AnalysisReport = await analyze(analyzerOptions);
 
