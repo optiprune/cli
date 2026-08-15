@@ -1,6 +1,6 @@
 {
   "name": "@optiprune/cli",
-  "version": "1.2.17",
+  "version": "1.2.18",
   "description": "CLI for resilient static dead-code analyzer for TypeScript and JavaScript workspaces.",
   "type": "module",
   "bin": {
@@ -76,6 +76,10 @@
   "devDependencies": {
     "@types/node": "^22.20.1",
     "typescript": "^5.8.3"
+  },
+  "optionalDependencies": {
+    "@yuku-parser/wasm": "0.8.7",
+    "@yuku-codegen/wasm": "0.8.7"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
