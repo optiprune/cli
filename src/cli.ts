@@ -4,6 +4,7 @@ import path from "pathe";
 import fs from "node:fs";
 import { Command } from "commander";
 const program = new Command();
+const FIX_TARGETS = new Set(["files", "exports", "dependencies", "devDependencies", "conditions"]);
 
 // Using @ts-ignore for core imports as CI environments sometimes struggle 
 // with subpath exports resolution in strict NodeNext mode.
@@ -53,9 +54,9 @@ program
   .option("--skip-3", "Skip Layer 3 (SMT Constraint Solver)")
   .option("--skip-4", "Skip Layer 4 (Concolic Execution Proofs)")
   .option("-v, --verbose", "Show verbose output and internal graph state")
-  .option("--fix", "Automatically remove unused exports, dependencies, and unreachable files")
-  .option("--fix-confidence <level>", "Minimum confidence level to fix (high, medium+, low+, all)", "high")
-  .option("--fix-rules <rules...>", "Specific rules to fix (exports, files, dependencies, or specific rule names)")
+  .option("--fix <rules...>", "Fix selected targets: files, exports, dependencies, devDependencies")
+  .option("--confidence <level>", "Minimum confidence to fix (high, medium+, low/low+, all)", "high")
+  .option("--force", "Allow fixes below the configured confidence threshold")
   .option("--dry-run", "Log what would be fixed without changing files")
   .option("--cache-from <path>", "Path to a JSON file to import cache from before analysis")
   .option("--cache-to <path>", "Path to export the resulting cache to after analysis")
@@ -66,22 +67,23 @@ program
       // Only an option explicitly supplied on the command line wins over config.
       const isCliOverride = (name: string) => command.getOptionValueSource(name) === "cli";
 
-      // Build FixConfig if --fix or other fix-related flags are used
+      // Build FixConfig only from explicitly supplied fix-related CLI values.
       let fixOption: boolean | FixConfig | undefined = undefined;
-      if (isCliOverride("fix") || isCliOverride("fixConfidence") || isCliOverride("fixRules") || isCliOverride("dryRun")) {
-        // Explicitly check if --fix was provided. If it's boolean true or not provided but other fix flags are,
-        // we enable fixing with the granular config.
-        const fixEnabled = isCliOverride("fix") ? !!options.fix : true;
-        
-        if (fixEnabled) {
-          fixOption = {
-            confidence: options.fixConfidence as any,
-            rules: options.fixRules,
-            dryRun: !!options.dryRun
-          };
-        } else {
-          fixOption = false;
+      const hasFixFlags = isCliOverride("fix") || isCliOverride("confidence") || isCliOverride("force") || isCliOverride("dryRun");
+      if (hasFixFlags) {
+        if (!isCliOverride("fix")) {
+          throw new Error("--confidence, --force, and --dry-run require --fix <target...>");
         }
+        const invalidTargets = (options.fix as string[]).filter((target) => !FIX_TARGETS.has(target));
+        if (invalidTargets.length > 0) {
+          throw new Error(`Unknown --fix target(s): ${invalidTargets.join(", ")}. Choose files, exports, dependencies, devDependencies, or conditions.`);
+        }
+        fixOption = {
+          confidence: options.confidence as any,
+          rules: options.fix,
+          force: !!options.force,
+          dryRun: !!options.dryRun,
+        } as FixConfig;
       }
 
       // The core resolves defaults and file configuration. The CLI deliberately

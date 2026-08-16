@@ -99,6 +99,24 @@ npx @optiprune/cli
 | `--sarif` | Output as SARIF | `false` |
 | `--skip-3` | Skip Layer 3 (SMT Constraint Solver) | `false` |
 | `--skip-4` | Skip Layer 4 (Concolic Execution Proofs) | `false` |
+| `--fix <targets...>` | Required fix targets: `files`, `exports`, `dependencies`, `devDependencies`, or `conditions` | none |
+| `--confidence <level>` | Minimum fix confidence: `high`, `medium+`, `low+`, or `all` | `high` |
+| `--force` | Override the configured confidence safety boundary | `false` |
+| `--dry-run` | Report planned fixes without modifying files | `false` |
+
+For example, to fix files, exports, dependencies, and development dependencies with low-confidence findings included, run:
+
+```bash
+npx @optiprune/cli analyze --fix files exports dependencies devDependencies --confidence low+
+```
+
+Use `--force` only when you explicitly accept fixes below the configured safety boundary:
+
+```bash
+npx @optiprune/cli analyze --fix exports --confidence high --force
+```
+
+`--confidence`, `--force`, and `--dry-run` require at least one `--fix` target. Unsupported or unknown targets are rejected before analysis begins.
 
 ---
 
