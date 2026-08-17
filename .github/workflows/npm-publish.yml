@@ -10,17 +10,35 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
+      id-token: write # Required for tokenless provenance
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 'latest'
-          registry-url: 'https://registry.npmjs.org'
+          node-version: 'lts/*'
 
       - run: npm ci
 
-      - run: tsc -p tsconfig.json
+      - run: npx tsc -p tsconfig.json
 
-      - run: npm publish --access public
+      # Step 1: Publish primary package (1.x.x)
+      - name: Publish Primary Package
+        run: npm publish --access public
+
+      # Step 2: Bump major +1 and publish old package (2.x.x)
+      - name: Publish Legacy Package (+1 Major)
+        run: |
+          OLD_VERSION=$(node -e "
+            const semver = require('./package.json').version.split('.');
+            semver[0] = parseInt(semver[0], 10) + 1;
+            console.log(semver.join('.'));
+          ")
+
+          echo "Publishing legacy package under version: $OLD_VERSION"
+
+          # Rename and update version in package.json
+          npm pkg set name="optiprune" version="$OLD_VERSION"
+
+          # Publish legacy package
+          npm publish --access public

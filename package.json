@@ -1,6 +1,6 @@
 {
   "name": "@optiprune/cli",
-  "version": "1.2.20",
+  "version": "1.2.21",
   "description": "CLI for resilient static dead-code analyzer for TypeScript and JavaScript workspaces.",
   "type": "module",
   "bin": {
@@ -69,7 +69,7 @@
     "./package.json": "./package.json"
   },
   "dependencies": {
-    "@optiprune/core": "^1.11.44",
+    "@optiprune/core": "^1.11.45",
     "commander": "^15.0.0",
     "pathe": "2.0.3"
   },
@@ -78,11 +78,12 @@
     "typescript": "^5.8.3"
   },
   "optionalDependencies": {
-    "@yuku-parser/wasm": "0.8.7",
-    "@yuku-codegen/wasm": "0.8.7"
+    "@yuku-codegen/wasm": "0.8.7",
+    "@yuku-parser/wasm": "0.8.7"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "node --test tests/ignore-unknown-import.test.mjs",
     "prepublishOnly": "npm run build"
   },
   "license": "MIT",

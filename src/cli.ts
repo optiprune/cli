@@ -2,6 +2,7 @@
 
 import path from "pathe";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 const program = new Command();
 const FIX_TARGETS = new Set(["files", "exports", "dependencies", "devDependencies", "conditions"]);
@@ -16,28 +17,62 @@ import { formatTerminal, formatSarif } from "@optiprune/core/reporters";
 import type { AnalyzerOptions, AnalysisReport, Finding, FixConfig } from "@optiprune/core/types";
 
 /** ANSI colour helpers */
-const bold  = (s: string) => `\x1b[1m${s}\x1b[0m`;
-const yellow= (s: string) => `\x1b[33m${s}\x1b[0m`;
-const red   = (s: string) => `\x1b[31m${s}\x1b[0m`;
-const dim   = (s: string) => `\x1b[2m${s}\x1b[0m`;
+const bold   = (s: string) => `\x1b[1m${s}\x1b[0m`;
+const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
+const red    = (s: string) => `\x1b[31m${s}\x1b[0m`;
+const dim    = (s: string) => `\x1b[2m${s}\x1b[0m`;
+
+// Helper to find the CLI package version
+function getCliVersion(): string {
+  try {
+    const currentDir = path.dirname(fileURLToPath(import.meta.url));
+    let dir = currentDir;
+    while (dir !== path.dirname(dir)) {
+      const pkgPath = path.join(dir, "package.json");
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+        if (pkg.version) return pkg.version;
+      }
+      dir = path.dirname(dir);
+    }
+  } catch (e) {}
+  return "unknown";
+}
 
 // Helper to find the core version safely
 function getCoreVersion(rootDir: string): string {
   try {
+    // 1. Try local node_modules in the current working directory
     const localCore = path.join(rootDir, "node_modules/@optiprune/core/package.json");
     if (fs.existsSync(localCore)) {
       const content = fs.readFileSync(localCore, "utf-8");
       const pkg = JSON.parse(content);
-      return pkg.version || "2.1.5";
+      if (pkg.version) return pkg.version;
+    }
+
+    // 2. Try resolving relative to this CLI file if bundled together
+    const cliDir = path.dirname(fileURLToPath(import.meta.url));
+    const siblingCore = path.join(cliDir, "../core/package.json");
+    if (fs.existsSync(siblingCore)) {
+      const content = fs.readFileSync(siblingCore, "utf-8");
+      const pkg = JSON.parse(content);
+      if (pkg.version) return pkg.version;
     }
   } catch (e) {}
-  return "2.1.5"; 
+  return "1.11.45"; 
 }
+
+const cliVersion = getCliVersion();
+const coreVersion = getCoreVersion(process.cwd());
 
 program
   .name("optiprune")
   .description("Finds dead code in TypeScript/JavaScript projects.")
-  .version(getCoreVersion(process.cwd()));
+  .version(
+    `CLI: ${cliVersion}, Core: ${coreVersion}`,
+    "-V, --version",
+    "output the version number"
+  );
 
 program
   .command("analyze", { isDefault: true })
@@ -65,12 +100,8 @@ program
   .option("--cache-to <path>", "Path to export the resulting cache to after analysis")
   .action(async (options, command) => {
     try {
-      // Commander materializes defaults in `options`. Forwarding those values
-      // would make them override optiprune.json/jsonc/package.json settings.
-      // Only an option explicitly supplied on the command line wins over config.
       const isCliOverride = (name: string) => command.getOptionValueSource(name) === "cli";
 
-      // Build FixConfig only from explicitly supplied fix-related CLI values.
       let fixOption: boolean | FixConfig | undefined = undefined;
       const hasFixFlags = isCliOverride("fix") || isCliOverride("confidence") || isCliOverride("force") || isCliOverride("dryRun");
       if (hasFixFlags) {
@@ -88,10 +119,6 @@ program
           dryRun: !!options.dryRun,
         } as FixConfig;
       }
-
-      // The core resolves defaults and file configuration. The CLI deliberately
-      // provides only explicit user overrides so the documented precedence is:
-      // CLI flag > config file > core default.
 
       const analyzerOptions = {
         ...(isCliOverride("rootDir") && { rootDir: options.rootDir }),
