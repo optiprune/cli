@@ -1,6 +1,6 @@
 {
   "name": "@optiprune/cli",
-  "version": "1.2.19",
+  "version": "1.2.20",
   "description": "CLI for resilient static dead-code analyzer for TypeScript and JavaScript workspaces.",
   "type": "module",
   "bin": {
@@ -69,7 +69,7 @@
     "./package.json": "./package.json"
   },
   "dependencies": {
-    "@optiprune/core": "^1.11.36",
+    "@optiprune/core": "^1.11.44",
     "commander": "^15.0.0",
     "pathe": "2.0.3"
   },

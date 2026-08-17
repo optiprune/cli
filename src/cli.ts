@@ -44,10 +44,13 @@ program
   .description("Perform full analysis of the project")
   .option("-r, --rootDir <path>", "Root directory of the project", process.cwd())
   .option("-e, --entry <patterns...>", "Entry point patterns (glob or file paths)", [])
-  .option("-x, --extensions <exts...>", "File extensions to analyze", [".ts", ".tsx", ".js", ".jsx"])
+  .option("-x, --extensions <exts...>", "File extensions to analyze", [".ts", ".tsx", ".js", ".jsx", ".vue"])
   .option("-i, --ignore <patterns...>", "Ignore patterns (glob)", [])
   .option("--no-report-unused-exports", "Do not report unused exports")
   .option("--no-conventional-entries", "Do not include conventional entry points (e.g., src/index.ts)")
+  .option("--include-entry-exports", "Report unused exports declared directly in entry files")
+  .option("--cycles", "Print detected dependency cycles")
+  .option("--ignore-tests", "Ignore test files such as test.ts, *.test.ts, and __tests__ files")
   .option("--fail-on <confidence>", "Fail on findings with confidence level (high, medium, low, none)", "high")
   .option("--json", "Output results as JSON")
   .option("--sarif", "Output results in SARIF format")
@@ -55,8 +58,8 @@ program
   .option("--skip-4", "Skip Layer 4 (Concolic Execution Proofs)")
   .option("-v, --verbose", "Show verbose output and internal graph state")
   .option("--fix <rules...>", "Fix selected targets: files, exports, dependencies, devDependencies")
-  .option("--confidence <level>", "Minimum confidence to fix (high, medium+, low/low+, all)", "high")
-  .option("--force", "Allow fixes below the configured confidence threshold")
+  .option("--confidence <level>", "Minimum confidence to fix (high, medium+, low+)", "high")
+  .option("--force", "Allow fixes when the source edit is otherwise considered unsafe")
   .option("--dry-run", "Log what would be fixed without changing files")
   .option("--cache-from <path>", "Path to a JSON file to import cache from before analysis")
   .option("--cache-to <path>", "Path to export the resulting cache to after analysis")
@@ -101,6 +104,9 @@ program
         ...(isCliOverride("conventionalEntries") && {
           includeConventionalEntries: options.conventionalEntries,
         }),
+        ...(isCliOverride("includeEntryExports") && { includeEntryExports: options.includeEntryExports }),
+        ...(isCliOverride("cycles") && { cycles: options.cycles }),
+        ...(isCliOverride("ignoreTests") && { ignoreTests: options.ignoreTests }),
         ...(isCliOverride("failOn") && { failOn: options.failOn }),
         ...(isCliOverride("json") && { json: options.json }),
         ...(isCliOverride("skip3") && { skip3: options.skip3 }),
@@ -118,7 +124,8 @@ program
       } else if (options.json) {
         console.log(JSON.stringify(report, (k, v) => typeof v === 'bigint' ? v.toString() : v, 2));
       } else {
-        console.log(formatTerminal(report));
+        const terminal = formatTerminal(report, { showCycles: !!options.cycles });
+        console.log(terminal);
       }
 
       if (shouldFail(report, options.failOn as any)) process.exit(1);
