@@ -86,6 +86,7 @@ program
   .option("--include-entry-exports", "Report unused exports declared directly in entry files")
   .option("--cycles", "Print detected dependency cycles")
   .option("--ignore-tests", "Ignore test files such as test.ts, *.test.ts, and __tests__ files")
+  .option("--ignore-unknown-import", "Ignore dynamic and unknown import patterns for reachability")
   .option("--fail-on <confidence>", "Fail on findings with confidence level (high, medium, low, none)", "high")
   .option("--json", "Output results as JSON")
   .option("--sarif", "Output results in SARIF format")
@@ -134,6 +135,7 @@ program
         ...(isCliOverride("includeEntryExports") && { includeEntryExports: options.includeEntryExports }),
         ...(isCliOverride("cycles") && { cycles: options.cycles }),
         ...(isCliOverride("ignoreTests") && { ignoreTests: options.ignoreTests }),
+        ...(isCliOverride("ignoreUnknownImport") && { ignoreUnknownImport: options.ignoreUnknownImport }),
         ...(isCliOverride("failOn") && { failOn: options.failOn }),
         ...(isCliOverride("json") && { json: options.json }),
         ...(isCliOverride("skip3") && { skip3: options.skip3 }),
