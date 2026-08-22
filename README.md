@@ -18,8 +18,8 @@ The CLI package is `@optiprune/cli`. The analysis engine is available separately
 | Logic analysis | Constant conditions, contradictory guards, unreachable statements, and schema-impossible guards. |
 | Dependencies | `package.json`, scripts, dependency/devDependency usage, package exports, bins, workspace packages, and lockfile-aware context. |
 | Contracts and entries | Public API contracts, schema-aware protection, conventional entries, entry-file exports, test-file handling, and framework/plugin entry points. |
-| Fixes | Opt-in fixes for unreachable files, unused exports and members, dependencies, development dependencies, and verified conditions. Every fix is confidence-gated and supports dry runs. |
-| Output | Human-readable terminal output, JSON reports, and SARIF output for CI/code-scanning workflows. |
+| Fixes | Opt-in fixes for unreachable files, unused exports and members, dependencies, development dependencies, verified conditions, and safely recoverable `package.json` JSON. Every fix is confidence-gated and supports dry runs. |
+| Output | Human-readable terminal output, JSON reports with optional structured debug diagnostics, and SARIF output for CI/code-scanning workflows. |
 | Headless usage | `analyze`, `shouldFail`, cache helpers, fix helpers, reporters, and public TypeScript types from `@optiprune/core`. |
 | Plugins | Source-aware adapters for frameworks, build tools, test tools, runtimes, package managers, and workspace conventions. |
 
@@ -86,15 +86,17 @@ npx @optiprune/cli analyze --sarif > optiprune.sarif
 | `--sarif` | Print SARIF output. | Disabled |
 | `--skip-3` | Skip the SMT constraint-analysis layer. | Disabled |
 | `--skip-4` | Skip the concolic execution-proof layer. | Disabled |
-| `-v, --verbose` | Print verbose output and internal graph state. | Disabled |
-| `--fix <rules...>` | Select fix targets: `files`, `exports`, `dependencies`, `devDependencies`, or `conditions`. | None |
-| `--confidence <level>` | Minimum fix confidence: `high`, `medium+`, or `low+`. | `high` |
+| `-v, --verbose` | Print verbose output and internal graph state; with `--json`, include structured `debug` diagnostics in the report. | Disabled |
+| `--fix <rules...>` | Select fix targets: `files`, `exports`, `dependencies`, `devDependencies`, `conditions`, or `json`. | None |
+| `--fix-json` | Safely repair recoverable `package.json` JSON errors; shorthand for `--fix json`. | Disabled |
+| `--node-llama-cpp` | Force-enable the dedicated node-llama-cpp semantic analysis plugin. | Disabled |
+| `--confidence <level>` | Minimum fix confidence: `high`, `medium+`, `low+`, or `all`. | `high` |
 | `--force` | Allow a selected fix when the source edit is otherwise considered unsafe. | Disabled |
 | `--dry-run` | Log planned fixes without changing files. | Disabled |
 | `--cache-from <path>` | Import a JSON cache before analysis. | None |
 | `--cache-to <path>` | Export the resulting cache after analysis. | None |
 
-`--confidence`, `--force`, and `--dry-run` require `--fix`. Unknown fix targets are rejected before analysis begins.
+`--confidence`, `--force`, and `--dry-run` require `--fix` or `--fix-json`. Unknown fix targets are rejected before analysis begins.
 
 ## Fixes
 
@@ -102,9 +104,12 @@ Fixes are explicit rather than implicit. Start with a dry run, inspect the outpu
 
 ```bash
 npx @optiprune/cli analyze \
-  --fix files exports dependencies devDependencies conditions \
+  --fix files exports dependencies devDependencies conditions json \
   --confidence medium+ \
   --dry-run
+
+# Or repair only safe package.json syntax issues
+npx @optiprune/cli analyze --fix-json
 ```
 
 | Target | Applies to |
@@ -114,6 +119,7 @@ npx @optiprune/cli analyze \
 | `dependencies` | Unused runtime dependencies. |
 | `devDependencies` | Unused development dependencies. |
 | `conditions` | Verified constant conditions. |
+| `json` | Safe recovery of malformed `package.json` syntax, including comments, trailing commas, missing commas, and missing closing delimiters. Unsafe forms such as unquoted keys remain unchanged. |
 
 `--force` changes the safety decision for the selected fix operation; it does not make an unverified finding correct. Use it only when the source edit has been reviewed.
 

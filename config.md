@@ -73,7 +73,7 @@ Determines the minimum issue severity level required to exit the process with a 
 
 verbose (boolean, default: false)
 
-Prints step-by-step diagnostic information to stdout.
+Prints step-by-step diagnostic information. When combined with `json: true` or `output: "json"`, Core embeds machine-readable parser and JSON-recovery diagnostics in `report.debug` instead of mixing them into JSON stdout.
 
 json (boolean, default: false)
 
@@ -87,7 +87,7 @@ Configures the automatic removal of dead code. Can be a boolean or an object for
 {
   "fix": {
     "confidence": "medium+",
-    "rules": ["exports", "files", "dependencies"],
+    "rules": ["exports", "files", "dependencies", "devDependencies", "json"],
     "dryRun": false
   }
 }
@@ -95,11 +95,25 @@ Configures the automatic removal of dead code. Can be a boolean or an object for
 
 - **confidence**: Minimum confidence to apply a fix (`high`, `medium+`, `low+`, `all`).
 
-- **rules**: Specific rules or categories (`exports`, `files`, `dependencies`) to fix.
+- **rules**: Specific rules or categories (`exports`, `files`, `dependencies`, `devDependencies`, `conditions`, `json`) to fix. The `json` rule only rewrites safely recoverable `package.json` syntax such as comments, trailing commas, missing commas, and missing closing delimiters. Ambiguous or unsafe forms remain unchanged and are reported with a location and reason.
 
 - **dryRun**: If true, logs what would be fixed without modifying files.
 
-**5. Rule Overrides (rules)**Fine-tune or disable specific inspection rules:
+**5. Plugin Overrides (plugins)**
+
+Enable or disable an installed source-aware plugin explicitly. For the dedicated node-llama-cpp semantic analysis plugin, use:
+
+```json
+{
+  "plugins": {
+    "node-llama-cpp-plugin": true
+  }
+}
+```
+
+The CLI equivalent is `--node-llama-cpp`.
+
+**6. Rule Overrides (rules)**Fine-tune or disable specific inspection rules:
 
 ```json
 "rules": {
@@ -113,7 +127,7 @@ Configures the automatic removal of dead code. Can be a boolean or an object for
 
 - `"off"`: Disables rule checking entirely.
 
-**6. Engine & Solver Tuning (layers)**Configure isolated runtimes, SMT solvers, and symbolic execution passes:
+**7. Engine & Solver Tuning (layers)**Configure isolated runtimes, SMT solvers, and symbolic execution passes:
 
 | Option | Type | Default | Purpose |
 | --- | --- | --- | --- |

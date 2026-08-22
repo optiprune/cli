@@ -5,7 +5,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 const program = new Command();
-const FIX_TARGETS = new Set(["files", "exports", "dependencies", "devDependencies", "conditions"]);
+const FIX_TARGETS = new Set(["files", "exports", "dependencies", "devDependencies", "conditions", "json"]);
 
 // Using @ts-ignore for core imports as CI environments sometimes struggle 
 // with subpath exports resolution in strict NodeNext mode.
@@ -59,7 +59,7 @@ function getCoreVersion(rootDir: string): string {
       if (pkg.version) return pkg.version;
     }
   } catch (e) {}
-  return "1.11.45"; 
+  return "1.12.1";
 }
 
 const cliVersion = getCliVersion();
@@ -92,9 +92,11 @@ program
   .option("--sarif", "Output results in SARIF format")
   .option("--skip-3", "Skip Layer 3 (SMT Constraint Solver)")
   .option("--skip-4", "Skip Layer 4 (Concolic Execution Proofs)")
-  .option("-v, --verbose", "Show verbose output and internal graph state")
-  .option("--fix <rules...>", "Fix selected targets: files, exports, dependencies, devDependencies")
-  .option("--confidence <level>", "Minimum confidence to fix (high, medium+, low+)", "high")
+  .option("-v, --verbose", "Show verbose output and internal graph state; with --json includes structured debug diagnostics")
+  .option("--fix <rules...>", "Fix selected targets: files, exports, dependencies, devDependencies, conditions, json")
+  .option("--fix-json", "Safely repair recoverable package.json JSON errors (equivalent to --fix json)")
+  .option("--node-llama-cpp", "Force-enable the dedicated node-llama-cpp semantic analysis plugin")
+  .option("--confidence <level>", "Minimum confidence to fix (high, medium+, low+, all)", "high")
   .option("--force", "Allow fixes when the source edit is otherwise considered unsafe")
   .option("--dry-run", "Log what would be fixed without changing files")
   .option("--cache-from <path>", "Path to a JSON file to import cache from before analysis")
@@ -104,18 +106,24 @@ program
       const isCliOverride = (name: string) => command.getOptionValueSource(name) === "cli";
 
       let fixOption: boolean | FixConfig | undefined = undefined;
-      const hasFixFlags = isCliOverride("fix") || isCliOverride("confidence") || isCliOverride("force") || isCliOverride("dryRun");
+      const hasExplicitFix = isCliOverride("fix");
+      const hasJsonFix = isCliOverride("fixJson") && !!options.fixJson;
+      const hasFixFlags = hasExplicitFix || hasJsonFix || isCliOverride("confidence") || isCliOverride("force") || isCliOverride("dryRun");
       if (hasFixFlags) {
-        if (!isCliOverride("fix")) {
-          throw new Error("--confidence, --force, and --dry-run require --fix <target...>");
+        if (!hasExplicitFix && !hasJsonFix) {
+          throw new Error("--confidence, --force, and --dry-run require --fix <target...> or --fix-json");
         }
-        const invalidTargets = (options.fix as string[]).filter((target) => !FIX_TARGETS.has(target));
+        const requestedTargets = [
+          ...(hasExplicitFix ? (options.fix as string[]) : []),
+          ...(hasJsonFix ? ["json"] : []),
+        ];
+        const invalidTargets = requestedTargets.filter((target) => !FIX_TARGETS.has(target));
         if (invalidTargets.length > 0) {
-          throw new Error(`Unknown --fix target(s): ${invalidTargets.join(", ")}. Choose files, exports, dependencies, devDependencies, or conditions.`);
+          throw new Error(`Unknown --fix target(s): ${invalidTargets.join(", ")}. Choose files, exports, dependencies, devDependencies, conditions, or json.`);
         }
         fixOption = {
           confidence: options.confidence as any,
-          rules: options.fix,
+          rules: [...new Set(requestedTargets)],
           force: !!options.force,
           dryRun: !!options.dryRun,
         } as FixConfig;
@@ -141,6 +149,7 @@ program
         ...(isCliOverride("skip3") && { skip3: options.skip3 }),
         ...(isCliOverride("skip4") && { skip4: options.skip4 }),
         ...(isCliOverride("verbose") && { verbose: options.verbose }),
+        ...(isCliOverride("nodeLlamaCpp") && { plugins: { "node-llama-cpp-plugin": !!options.nodeLlamaCpp } }),
         ...(fixOption !== undefined && { fix: fixOption }),
         ...(isCliOverride("cacheFrom") && { cacheFrom: options.cacheFrom }),
         ...(isCliOverride("cacheTo") && { cacheTo: options.cacheTo }),
