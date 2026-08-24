@@ -7,14 +7,30 @@ import { Command } from "commander";
 const program = new Command();
 const FIX_TARGETS = new Set(["files", "exports", "dependencies", "devDependencies", "conditions", "json"]);
 
+// Test and fixture patterns defined directly in the CLI
+const TEST_IGNORE_PATTERNS = [
+  "**/test/**",
+  "**/tests/**",
+  "**/fixtures/**",
+  "**/__tests__/**",
+  "**/*.test.ts",
+  "**/*.test.js",
+  "**/*.test.tsx",
+  "**/*.test.jsx",
+  "**/*.spec.ts",
+  "**/*.spec.js",
+  "**/*.spec.tsx",
+  "**/*.spec.jsx",
+];
+
 // Using @ts-ignore for core imports as CI environments sometimes struggle 
 // with subpath exports resolution in strict NodeNext mode.
 // @ts-ignore
-import { analyze, shouldFail, exportCache, importCache } from "@optiprune/core";
+import { analyze, shouldFail, exportCache, importCache, loadConfig, mergeConfig, DEFAULT_CONFIG } from "@optiprune/core";
 // @ts-ignore
 import { formatTerminal, formatSarif } from "@optiprune/core/reporters";
 // @ts-ignore
-import type { AnalyzerOptions, AnalysisReport, Finding, FixConfig } from "@optiprune/core/types";
+import type { AnalyzerOptions, AnalysisReport, Finding, FixConfig, Config } from "@optiprune/core/types";
 
 /** ANSI colour helpers */
 const bold   = (s: string) => `\x1b[1m${s}\x1b[0m`;
@@ -42,7 +58,6 @@ function getCliVersion(): string {
 // Helper to find the core version safely
 function getCoreVersion(rootDir: string): string {
   try {
-    // 1. Try local node_modules in the current working directory
     const localCore = path.join(rootDir, "node_modules/@optiprune/core/package.json");
     if (fs.existsSync(localCore)) {
       const content = fs.readFileSync(localCore, "utf-8");
@@ -50,7 +65,6 @@ function getCoreVersion(rootDir: string): string {
       if (pkg.version) return pkg.version;
     }
 
-    // 2. Try resolving relative to this CLI file if bundled together
     const cliDir = path.dirname(fileURLToPath(import.meta.url));
     const siblingCore = path.join(cliDir, "../core/package.json");
     if (fs.existsSync(siblingCore)) {
@@ -85,7 +99,7 @@ program
   .option("--no-conventional-entries", "Do not include conventional entry points (e.g., src/index.ts)")
   .option("--include-entry-exports", "Report unused exports declared directly in entry files")
   .option("--cycles", "Print detected dependency cycles")
-  .option("--ignore-tests", "Ignore test files such as test.ts, *.test.ts, and __tests__ files")
+  .option("--ignore-tests", "Ignore test files such as test.ts, *.test.ts, fixtures, and __tests__ files")
   .option("--ignore-unknown-import", "Ignore dynamic and unknown import patterns for reachability")
   .option("--fail-on <confidence>", "Fail on findings with confidence level (high, medium, low, none)", "high")
   .option("--json", "Output results as JSON")
@@ -104,7 +118,12 @@ program
   .action(async (options, command) => {
     try {
       const isCliOverride = (name: string) => command.getOptionValueSource(name) === "cli";
+      const targetRootDir = path.resolve(options.rootDir ?? process.cwd());
 
+      // 1. Read project config via core's loadConfig
+      const fileConfig: Config = typeof loadConfig === "function" ? await loadConfig(targetRootDir) : {};
+
+      // 2. Resolve fix configurations
       let fixOption: boolean | FixConfig | undefined = undefined;
       const hasExplicitFix = isCliOverride("fix");
       const hasJsonFix = isCliOverride("fixJson") && !!options.fixJson;
@@ -129,11 +148,28 @@ program
         } as FixConfig;
       }
 
-      const analyzerOptions = {
-        ...(isCliOverride("rootDir") && { rootDir: options.rootDir }),
+      // 3. Determine if test ignoring is active (CLI flag OR config file setting)
+      const shouldIgnoreTests = isCliOverride("ignoreTests")
+        ? !!options.ignoreTests
+        : !!fileConfig.ignoreTests;
+
+      // 4. Resolve ignore patterns directly in the CLI
+      let mergedIgnore: string[] | undefined = undefined;
+      const cliIgnore = isCliOverride("ignore") ? (options.ignore as string[]) : undefined;
+      const baseIgnore = cliIgnore ?? (Array.isArray(fileConfig.ignore) ? fileConfig.ignore : []);
+
+      if (shouldIgnoreTests || baseIgnore.length > 0) {
+        const testGlobs = shouldIgnoreTests ? TEST_IGNORE_PATTERNS : [];
+        mergedIgnore = Array.from(new Set([...testGlobs, ...baseIgnore]));
+      }
+
+      // 5. Build CLI overrides
+      const cliOverrides: Partial<Config> = {
+        ...(isCliOverride("rootDir") && { rootDir: targetRootDir }),
         ...(isCliOverride("entry") && { entry: options.entry }),
         ...(isCliOverride("extensions") && { extensions: options.extensions }),
-        ...(isCliOverride("ignore") && { ignore: options.ignore }),
+        ...(mergedIgnore !== undefined && { ignore: mergedIgnore }),
+        ...(shouldIgnoreTests && { ignoreTests: true }),
         ...(isCliOverride("reportUnusedExports") && {
           reportUnusedExports: options.reportUnusedExports,
         }),
@@ -142,31 +178,35 @@ program
         }),
         ...(isCliOverride("includeEntryExports") && { includeEntryExports: options.includeEntryExports }),
         ...(isCliOverride("cycles") && { cycles: options.cycles }),
-        ...(isCliOverride("ignoreTests") && { ignoreTests: options.ignoreTests }),
         ...(isCliOverride("ignoreUnknownImport") && { ignoreUnknownImport: options.ignoreUnknownImport }),
         ...(isCliOverride("failOn") && { failOn: options.failOn }),
         ...(isCliOverride("json") && { json: options.json }),
-        ...(isCliOverride("skip3") && { skip3: options.skip3 }),
-        ...(isCliOverride("skip4") && { skip4: options.skip4 }),
+        ...(isCliOverride("skip3") && { layers: { ...(fileConfig.layers ?? {}), skip3: !!options.skip3 } as any }),
+        ...(isCliOverride("skip4") && { layers: { ...(fileConfig.layers ?? {}), skip4: !!options.skip4 } as any }),
         ...(isCliOverride("verbose") && { verbose: options.verbose }),
-        ...(isCliOverride("nodeLlamaCpp") && { plugins: { "node-llama-cpp-plugin": !!options.nodeLlamaCpp } }),
+        ...(isCliOverride("nodeLlamaCpp") && { plugins: { ...(fileConfig.plugins ?? {}), "node-llama-cpp-plugin": !!options.nodeLlamaCpp } }),
         ...(fixOption !== undefined && { fix: fixOption }),
         ...(isCliOverride("cacheFrom") && { cacheFrom: options.cacheFrom }),
         ...(isCliOverride("cacheTo") && { cacheTo: options.cacheTo }),
-      } as AnalyzerOptions;
+      };
 
-      const report: AnalysisReport = await analyze(analyzerOptions);
+      // 6. Merge DEFAULT_CONFIG -> fileConfig -> cliOverrides
+      const baseConfig = typeof DEFAULT_CONFIG !== "undefined" ? DEFAULT_CONFIG : { rootDir: targetRootDir };
+      const resolvedWithFile = typeof mergeConfig === "function" ? mergeConfig(baseConfig, fileConfig) : { ...baseConfig, ...fileConfig };
+      const finalConfig = typeof mergeConfig === "function" ? mergeConfig(resolvedWithFile, cliOverrides) : { ...resolvedWithFile, ...cliOverrides };
+
+      const report: AnalysisReport = await analyze(finalConfig as AnalyzerOptions);
 
       if (options.sarif) {
         console.log(formatSarif(report));
-      } else if (options.json) {
+      } else if (finalConfig.json || options.json) {
         console.log(JSON.stringify(report, (k, v) => typeof v === 'bigint' ? v.toString() : v, 2));
       } else {
-        const terminal = formatTerminal(report, { showCycles: !!options.cycles });
+        const terminal = formatTerminal(report, { showCycles: !!finalConfig.cycles });
         console.log(terminal);
       }
 
-      if (shouldFail(report, options.failOn as any)) process.exit(1);
+      if (shouldFail(report, (finalConfig.failOn ?? options.failOn) as any)) process.exit(1);
     } catch (error) {
       console.error("An unexpected error occurred during analysis:", error);
       process.exit(1);
