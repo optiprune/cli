@@ -98,6 +98,7 @@ program
   .option("--no-report-unused-exports", "Do not report unused exports")
   .option("--no-conventional-entries", "Do not include conventional entry points (e.g., src/index.ts)")
   .option("--include-entry-exports", "Report unused exports declared directly in entry files")
+  .option("--include-entry-members", "Report unused members declared in objects exported directly from entry files")
   .option("--cycles", "Print detected dependency cycles")
   .option("--ignore-tests", "Ignore test files such as test.ts, *.test.ts, fixtures, and __tests__ files")
   .option("--ignore-unknown-import", "Ignore dynamic and unknown import patterns for reachability")
@@ -177,6 +178,7 @@ program
           includeConventionalEntries: options.conventionalEntries,
         }),
         ...(isCliOverride("includeEntryExports") && { includeEntryExports: options.includeEntryExports }),
+        ...(isCliOverride("includeEntryMembers") && { includeEntryMembers: options.includeEntryMembers }),
         ...(isCliOverride("cycles") && { cycles: options.cycles }),
         ...(isCliOverride("ignoreUnknownImport") && { ignoreUnknownImport: options.ignoreUnknownImport }),
         ...(isCliOverride("failOn") && { failOn: options.failOn }),

@@ -79,6 +79,7 @@ npx @optiprune/cli analyze --sarif > optiprune.sarif
 | `--no-report-unused-exports` | Disable unused-export reporting. | Enabled |
 | `--no-conventional-entries` | Exclude conventional entries such as `src/index.ts`. | Included |
 | `--include-entry-exports` | Report unused exports declared directly in entry files. | Disabled |
+| `--include-entry-members` | Report unused members declared in objects exported directly from entry files. | Disabled |
 | `--cycles` | Print detected dependency cycles. | Disabled |
 | `--ignore-tests` | Ignore test files such as `test.ts`, `*.test.ts`, and `__tests__`. | Disabled |
 | `--fail-on <confidence>` | Exit non-zero when findings meet the selected confidence level: `high`, `medium`, `low`, or `none`. | `high` |
