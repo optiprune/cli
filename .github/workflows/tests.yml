@@ -1,0 +1,46 @@
+name: Test CLI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out CLI
+        uses: actions/checkout@v4
+
+      - name: Check out Core compatibility target
+        uses: actions/checkout@v4
+        with:
+          repository: optiprune/core
+          path: core
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install and build Core
+        working-directory: core
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install CLI dependencies
+        run: npm ci
+
+      - name: Link built Core for compatibility testing
+        run: npm install --ignore-scripts --no-save ./core
+
+      - name: Build CLI
+        run: npm run build
+
+      - name: Run CLI tests
+        run: npm test

@@ -30,7 +30,7 @@ import { analyze, shouldFail, exportCache, importCache, loadConfig, mergeConfig,
 // @ts-ignore
 import { formatTerminal, formatSarif } from "@optiprune/core/reporters";
 // @ts-ignore
-import type { AnalyzerOptions, AnalysisReport, Finding, FixConfig, Config } from "@optiprune/core/types";
+import type { AnalyzerOptions, AnalysisReport, Finding, FixConfig, Config, ResolvedOptions } from "@optiprune/core/types";
 
 /** ANSI colour helpers */
 const bold   = (s: string) => `\x1b[1m${s}\x1b[0m`;
@@ -191,9 +191,28 @@ program
       };
 
       // 6. Merge DEFAULT_CONFIG -> fileConfig -> cliOverrides
-      const baseConfig = typeof DEFAULT_CONFIG !== "undefined" ? DEFAULT_CONFIG : { rootDir: targetRootDir };
-      const resolvedWithFile = typeof mergeConfig === "function" ? mergeConfig(baseConfig, fileConfig) : { ...baseConfig, ...fileConfig };
-      const finalConfig = typeof mergeConfig === "function" ? mergeConfig(resolvedWithFile, cliOverrides) : { ...resolvedWithFile, ...cliOverrides };
+      const baseConfig: ResolvedOptions = {
+        ...DEFAULT_CONFIG,
+        rootDir: targetRootDir,
+        entry: [...DEFAULT_CONFIG.entry],
+        extensions: [...DEFAULT_CONFIG.extensions],
+        ignore: [...DEFAULT_CONFIG.ignore],
+        ignoreDependencies: [...DEFAULT_CONFIG.ignoreDependencies],
+        packageIgnoreDependencies: new Map(DEFAULT_CONFIG.packageIgnoreDependencies),
+        externalContracts: [...DEFAULT_CONFIG.externalContracts],
+        pathAliases: new Map(DEFAULT_CONFIG.pathAliases),
+        packageImports: new Map(DEFAULT_CONFIG.packageImports),
+        layers: { ...DEFAULT_CONFIG.layers },
+        rules: { ...DEFAULT_CONFIG.rules },
+        plugins: { ...DEFAULT_CONFIG.plugins },
+        workspaceGlobs: [...DEFAULT_CONFIG.workspaceGlobs],
+        projectPatterns: [...DEFAULT_CONFIG.projectPatterns],
+        unreachableFileIgnorePatterns: [...DEFAULT_CONFIG.unreachableFileIgnorePatterns],
+        protectedExportPatterns: [...DEFAULT_CONFIG.protectedExportPatterns],
+        frameworks: [...DEFAULT_CONFIG.frameworks],
+      };
+      const resolvedWithFile = mergeConfig(baseConfig, fileConfig);
+      const finalConfig = mergeConfig(resolvedWithFile, cliOverrides);
 
       const report: AnalysisReport = await analyze(finalConfig as AnalyzerOptions);
 
