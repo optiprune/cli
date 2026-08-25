@@ -27,13 +27,35 @@ Create an `optiprune.json` or `optiprune.jsonc` file in the root directory of yo
 
 ## How OptiPrune Loads Configuration
 
-When OptiPrune initializes, it checks the workspace root in the following order of precedence:
+OptiPrune resolves configuration from the directory passed to `--rootDir` (or the current working directory when `--rootDir` is omitted). It checks these sources in order; the first valid source wins:
 
-optiprune.json (Highest Priority )
+| Priority | Source | Evaluation |
+| --- | --- | --- |
+| 1 | `optiprune.json` | Strict JSON; highest priority. |
+| 2 | `optiprune.jsonc` | JSONC with comments and trailing commas. |
+| 3 | `optiprune.config.ts` | Loaded through Jiti; use a default export. |
+| 4 | `optiprune.config.js` | Loaded as JavaScript with a default export. |
+| 5 | `optiprune.config.mjs` | Loaded as ESM JavaScript with a default export. |
+| 6 | `package.json` | Uses the top-level `optiprune` object as a fallback. |
 
-optiprune.jsonc (Allows comments //, /* */, and trailing commas)
+### Recommended `optiprune.config.ts`
 
-package.json (Falls back to reading an "optiprune" key)
+```ts
+import { defineConfig } from '@optiprune/core';
+
+export default defineConfig({
+  rootDir: '.',
+  entry: ['src/index.ts'],
+  extensions: ['.ts', '.tsx', '.js', '.jsx'],
+  ignore: ['**/dist/**', '**/*.generated.ts'],
+  ignoreTests: true,
+  failOn: 'high',
+  output: 'terminal',
+  layers: { skip3: false, skip4: false },
+});
+```
+
+The config file must use a default export. `defineConfig` is a typed identity helper exported by `@optiprune/core`; it does not alter the object. Relative paths are resolved from the analyzed project root, and CLI options override loaded configuration values.
 
 ---
 
