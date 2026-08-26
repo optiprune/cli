@@ -105,8 +105,7 @@ program
   .option("--fail-on <confidence>", "Fail on findings with confidence level (high, medium, low, none)", "high")
   .option("--json", "Output results as JSON")
   .option("--sarif", "Output results in SARIF format")
-  .option("--skip-3", "Skip Layer 3 (SMT Constraint Solver)")
-  .option("--skip-4", "Skip Layer 4 (Concolic Execution Proofs)")
+  .option("--skip <layers...>", "Skip analysis layers (3, 4, or smt)")
   .option("-v, --verbose", "Show verbose output and internal graph state; with --json includes structured debug diagnostics")
   .option("--fix <rules...>", "Fix selected targets: files, exports, dependencies, devDependencies, conditions, json")
   .option("--fix-json", "Safely repair recoverable package.json JSON errors (equivalent to --fix json)")
@@ -165,6 +164,17 @@ program
       }
 
       // 5. Build CLI overrides
+      const skipValues = isCliOverride("skip") ? (options.skip as string[]) : [];
+      const invalidSkipValues = skipValues.filter((value) => !["3", "4", "smt"].includes(value.toLowerCase()));
+      if (invalidSkipValues.length > 0) {
+        throw new Error(`Unknown --skip value(s): ${invalidSkipValues.join(", ")}. Choose 3, 4, or smt.`);
+      }
+      const skipLayers = {
+        ...(fileConfig.layers ?? {}),
+        ...(skipValues.some((value) => value === "3") && { skip3: true }),
+        ...(skipValues.some((value) => value === "4") && { skip4: true }),
+        ...(skipValues.some((value) => value.toLowerCase() === "smt") && { skipSmt: true, skip3: true }),
+      };
       const cliOverrides: Partial<Config> = {
         ...(isCliOverride("rootDir") && { rootDir: targetRootDir }),
         ...(isCliOverride("entry") && { entry: options.entry }),
@@ -183,8 +193,7 @@ program
         ...(isCliOverride("ignoreUnknownImport") && { ignoreUnknownImport: options.ignoreUnknownImport }),
         ...(isCliOverride("failOn") && { failOn: options.failOn }),
         ...(isCliOverride("json") && { json: options.json }),
-        ...(isCliOverride("skip3") && { layers: { ...(fileConfig.layers ?? {}), skip3: !!options.skip3 } as any }),
-        ...(isCliOverride("skip4") && { layers: { ...(fileConfig.layers ?? {}), skip4: !!options.skip4 } as any }),
+        ...(isCliOverride("skip") && { layers: skipLayers as any }),
         ...(isCliOverride("verbose") && { verbose: options.verbose }),
         ...(isCliOverride("nodeLlamaCpp") && { plugins: { ...(fileConfig.plugins ?? {}), "node-llama-cpp-plugin": !!options.nodeLlamaCpp } }),
         ...(fixOption !== undefined && { fix: fixOption }),
