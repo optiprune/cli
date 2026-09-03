@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import path from "node:path";
+import path from "pathe";
 import { createRequire } from "node:module";
 
 export interface PluginResolution {
