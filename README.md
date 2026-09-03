@@ -85,19 +85,18 @@ npx @optiprune/cli analyze --sarif > optiprune.sarif
 | `--fail-on <confidence>` | Exit non-zero when findings meet the selected confidence level: `high`, `medium`, `low`, or `none`. | `high` |
 | `--json` | Print the structured analysis report as JSON. | Disabled |
 | `--sarif` | Print SARIF output. | Disabled |
-| `--skip-3` | Skip the SMT constraint-analysis layer. | Disabled |
-| `--skip-4` | Skip the concolic execution-proof layer. | Disabled |
+| `--skip <layers...>` | Skip analysis layers `3`, `4`, or `smt`; `smt` also skips layer `3`. | Disabled |
 | `-v, --verbose` | Print verbose output and internal graph state; with `--json`, include structured `debug` diagnostics in the report. | Disabled |
 | `--fix <rules...>` | Select fix targets: `files`, `exports`, `dependencies`, `devDependencies`, `conditions`, or `json`. | None |
 | `--fix-json` | Safely repair recoverable `package.json` JSON errors; shorthand for `--fix json`. | Disabled |
-| `--node-llama-cpp` | Force-enable the dedicated node-llama-cpp semantic analysis plugin. | Disabled |
+| `--plugins <names...>` | Force-enable one or more built-in plugins, such as `--plugins astro vite vitest`. Names may omit the `-plugin` suffix; unknown names produce `Did you mean ...?` when a familiar match exists, otherwise `No Plugin found with the name ...`. | Disabled |
 | `--confidence <level>` | Minimum fix confidence: `high`, `medium+`, `low+`, or `all`. | `high` |
 | `--force` | Allow a selected fix when the source edit is otherwise considered unsafe. | Disabled |
 | `--dry-run` | Log planned fixes without changing files. | Disabled |
 | `--cache-from <path>` | Import a JSON cache before analysis. | None |
 | `--cache-to <path>` | Export the resulting cache after analysis. | None |
 
-`--confidence`, `--force`, and `--dry-run` require `--fix` or `--fix-json`. Unknown fix targets are rejected before analysis begins.
+`--confidence`, `--force`, and `--dry-run` require `--fix` or `--fix-json`. Unknown fix targets are rejected before analysis begins. `--plugins` is repeatable in one invocation and force-enables the named built-in plugins without changing other plugin settings from project configuration.
 
 ## Fixes
 

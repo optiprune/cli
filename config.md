@@ -123,17 +123,19 @@ Configures the automatic removal of dead code. Can be a boolean or an object for
 
 **5. Plugin Overrides (plugins)**
 
-Enable or disable an installed source-aware plugin explicitly. For the dedicated node-llama-cpp semantic analysis plugin, use:
+Enable or disable an installed source-aware plugin explicitly. Use the canonical plugin name, including the `-plugin` suffix:
 
 ```json
 {
   "plugins": {
-    "node-llama-cpp-plugin": true
+    "astro-plugin": true,
+    "vite-plugin": true,
+    "vitest-plugin": true
   }
 }
 ```
 
-The CLI equivalent is `--node-llama-cpp`.
+The CLI equivalent is repeatable and accepts short names without the suffix: `--plugins astro vite vitest`. Each requested plugin is force-enabled. An unknown name produces `Did you mean ...?` when a familiar match exists; otherwise the CLI reports `No Plugin found with the name ...`.
 
 **6. Rule Overrides (rules)**Fine-tune or disable specific inspection rules:
 

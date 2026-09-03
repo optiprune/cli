@@ -4,6 +4,7 @@ import path from "pathe";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
+import { assertPluginsExist } from "./plugin-resolution.js";
 const program = new Command();
 const FIX_TARGETS = new Set(["files", "exports", "dependencies", "devDependencies", "conditions", "json"]);
 
@@ -109,7 +110,7 @@ program
   .option("-v, --verbose", "Show verbose output and internal graph state; with --json includes structured debug diagnostics")
   .option("--fix <rules...>", "Fix selected targets: files, exports, dependencies, devDependencies, conditions, json")
   .option("--fix-json", "Safely repair recoverable package.json JSON errors (equivalent to --fix json)")
-  .option("--node-llama-cpp", "Force-enable the dedicated node-llama-cpp semantic analysis plugin")
+  .option("--plugins <names...>", "Force-enable built-in plugins by name (for example: astro vite vitest)")
   .option("--confidence <level>", "Minimum confidence to fix (high, medium+, low+, all)", "high")
   .option("--force", "Allow fixes when the source edit is otherwise considered unsafe")
   .option("--dry-run", "Log what would be fixed without changing files")
@@ -163,7 +164,11 @@ program
         mergedIgnore = Array.from(new Set([...testGlobs, ...baseIgnore]));
       }
 
-      // 5. Build CLI overrides
+      // 5. Resolve explicitly requested plugins before building overrides.
+      const requestedPlugins = isCliOverride("plugins") ? (options.plugins as string[]) : [];
+      const resolvedPlugins = requestedPlugins.length > 0 ? assertPluginsExist(requestedPlugins) : [];
+
+      // 6. Build CLI overrides
       const skipValues = isCliOverride("skip") ? (options.skip as string[]) : [];
       const invalidSkipValues = skipValues.filter((value) => !["3", "4", "smt"].includes(value.toLowerCase()));
       if (invalidSkipValues.length > 0) {
@@ -195,13 +200,18 @@ program
         ...(isCliOverride("json") && { json: options.json }),
         ...(isCliOverride("skip") && { layers: skipLayers as any }),
         ...(isCliOverride("verbose") && { verbose: options.verbose }),
-        ...(isCliOverride("nodeLlamaCpp") && { plugins: { ...(fileConfig.plugins ?? {}), "node-llama-cpp-plugin": !!options.nodeLlamaCpp } }),
+        ...(isCliOverride("plugins") && {
+          plugins: {
+            ...(fileConfig.plugins ?? {}),
+            ...Object.fromEntries(resolvedPlugins.map((plugin) => [plugin, true])),
+          },
+        }),
         ...(fixOption !== undefined && { fix: fixOption }),
         ...(isCliOverride("cacheFrom") && { cacheFrom: options.cacheFrom }),
         ...(isCliOverride("cacheTo") && { cacheTo: options.cacheTo }),
       };
 
-      // 6. Merge DEFAULT_CONFIG -> fileConfig -> cliOverrides
+      // 7. Merge DEFAULT_CONFIG -> fileConfig -> cliOverrides
       const baseConfig: ResolvedOptions = {
         ...DEFAULT_CONFIG,
         rootDir: targetRootDir,
