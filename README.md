@@ -35,7 +35,7 @@ pnpm add -D @optiprune/cli
 yarn add -D @optiprune/cli
 ```
 
-The Core package currently requires Node.js 21 or newer.
+The Core package currently requires Node.js 20 or newer.
 
 ## Quick start
 
