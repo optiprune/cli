@@ -112,6 +112,7 @@ Analyze Options:
   --dry-run                         Log fixes without writing files
   --cache-from <path>               Import cache JSON prior to analysis
   --cache-to <path>                 Export resulting cache to JSON after analysis
+  --stop-new-cache-on-update        Reuse cache across Core or plugin version updates
 `);
 }
 
@@ -124,8 +125,9 @@ function normalizeVariadicFlags(args: string[], variadicNames: string[]): string
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg.startsWith("-")) {
+      const hasEquals = arg.includes("=");
       const flagName = arg.split("=")[0]!.replace(/^-+/, "");
-      currentFlag = variadicSet.has(flagName) ? arg.split("=")[0]! : null;
+      currentFlag = !hasEquals && variadicSet.has(flagName) ? arg : null;
       result.push(arg);
     } else if (currentFlag && !arg.startsWith("-")) {
       result.push(currentFlag, arg);
@@ -168,6 +170,7 @@ async function runAnalyze(args: string[]) {
     "dry-run": { type: "boolean" as const },
     "cache-from": { type: "string" as const },
     "cache-to": { type: "string" as const },
+    "stop-new-cache-on-update": { type: "boolean" as const },
   };
 
   const { values } = parseArgs({
@@ -182,7 +185,7 @@ async function runAnalyze(args: string[]) {
     return;
   }
 
-  // Checks both long form (--rootDir) and short alias (-r)
+  // Checks both long form (--rootDir) and short alias (-r), supporting inline '='
   const isCliOverride = (longFlag: string, shortFlag?: string) => {
     return args.some((arg) => {
       const base = arg.split("=")[0];
@@ -213,6 +216,9 @@ async function runAnalyze(args: string[]) {
       ...(hasExplicitFix && Array.isArray(values.fix) ? (values.fix as string[]) : []),
       ...(hasJsonFix ? ["json"] : []),
     ];
+    if (requestedTargets.length === 0) {
+      throw new Error("--fix requires at least one target: files, exports, dependencies, devDependencies, conditions, or json.");
+    }
     const invalidTargets = requestedTargets.filter((target) => !FIX_TARGETS.has(target));
     if (invalidTargets.length > 0) {
       throw new Error(`Unknown --fix target(s): ${invalidTargets.join(", ")}. Choose files, exports, dependencies, devDependencies, conditions, or json.`);
@@ -246,16 +252,17 @@ async function runAnalyze(args: string[]) {
 
   // 6. Build CLI overrides
   const skipValues = isCliOverride("skip") ? ((values.skip as string[] | undefined) ?? []) : [];
-  const invalidSkipValues = skipValues.filter((value) => !["3", "4", "smt"].includes(value.toLowerCase()));
+  const normalizedSkipValues = skipValues.map((v) => v.toLowerCase());
+  const invalidSkipValues = normalizedSkipValues.filter((value) => !["3", "4", "smt"].includes(value));
   if (invalidSkipValues.length > 0) {
     throw new Error(`Unknown --skip value(s): ${invalidSkipValues.join(", ")}. Choose 3, 4, or smt.`);
   }
 
   const skipLayers = {
     ...(fileConfig.layers ?? {}),
-    ...(skipValues.some((value) => value === "3") && { skip3: true }),
-    ...(skipValues.some((value) => value === "4") && { skip4: true }),
-    ...(skipValues.some((value) => value.toLowerCase() === "smt") && { skipSmt: true, skip3: true }),
+    ...(normalizedSkipValues.includes("3") && { skip3: true }),
+    ...(normalizedSkipValues.includes("4") && { skip4: true }),
+    ...(normalizedSkipValues.includes("smt") && { skipSmt: true, skip3: true }),
   };
 
   const reportUnusedExports = values["no-report-unused-exports"] ? false : Boolean(values["report-unused-exports"]);
@@ -264,9 +271,7 @@ async function runAnalyze(args: string[]) {
   const cliOverrides: Partial<Config> = {
     ...(isCliOverride("rootDir", "r") && { rootDir: targetRootDir }),
     ...(isCliOverride("entry", "e") && values.entry && { entry: values.entry as string[] }),
-    ...(isCliOverride("extensions", "x")
-      ? values.extensions ? { extensions: values.extensions as string[] } : {}
-      : { extensions: [".ts", ".tsx", ".js", ".jsx", ".vue"] }),
+    ...(isCliOverride("extensions", "x") && values.extensions && { extensions: values.extensions as string[] }),
     ...(mergedIgnore !== undefined && { ignore: mergedIgnore }),
     ...(shouldIgnoreTests && { ignoreTests: true }),
     ...(isCliOverride("report-unused-exports") && { reportUnusedExports }),
@@ -288,6 +293,7 @@ async function runAnalyze(args: string[]) {
     ...(fixOption !== undefined && { fix: fixOption }),
     ...(isCliOverride("cache-from") && values["cache-from"] && { cacheFrom: values["cache-from"] as string }),
     ...(isCliOverride("cache-to") && values["cache-to"] && { cacheTo: values["cache-to"] as string }),
+    ...(isCliOverride("stop-new-cache-on-update") && { stopNewCacheOnUpdate: Boolean(values["stop-new-cache-on-update"]) }),
   };
 
   // 7. Merge DEFAULT_CONFIG -> fileConfig -> cliOverrides

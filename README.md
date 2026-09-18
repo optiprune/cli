@@ -138,6 +138,8 @@ npx @optiprune/cli import-cache .optiprune/cache.json
 
 `export-cache` and `import-cache` accept `-r, --rootDir <path>` when the cache belongs to a directory other than the current working directory.
 
+Cache entries are valid only for the same Core version and the same enabled plugin versions by default. A Core update, enabled-plugin update, or change in which plugins are enabled therefore starts a fresh cache. Use `--stop-new-cache-on-update` when intentionally reusing an existing cache across such updates.
+
 ## Configuration
 
 OptiPrune reads configuration through the Core loader. Supported sources include:
