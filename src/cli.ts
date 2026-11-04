@@ -834,7 +834,7 @@ async function main() {
       ],
     },
     {
-      name: "│ help",
+      name: "help",
       action: () => {
         console.log("OptiPrune analyzes JavaScript and TypeScript projects for unreachable code.\n\nChoose prune to analyze, config to edit settings, or update to install the newest compatible package version.\n\nFor automation, run `optiprune analyze`; help never runs analysis or fixes.");
       },
