@@ -57,7 +57,7 @@ function getCoreVersion(rootDir: string): string {
       if (pkg.version) return pkg.version;
     }
   } catch {}
-  return "1.12.1";
+  return "2.0.0-alpha.1";
 }
 
 function getGlobalConfigDir(): string {
@@ -77,7 +77,7 @@ function getLocalConfigPath(rootDir: string): string {
   return path.join(rootDir, "optiprune.config.json");
 }
 
-/* --- Built-in Pure Node Tar Extractor (Zero External Dependencies) --- */
+/* --- Built-in Tar Extractor --- */
 async function extractTarGz(tarGzBuffer: Buffer, targetDir: string): Promise<void> {
   const tarBuffer = zlib.gunzipSync(tarGzBuffer);
   let offset = 0;
@@ -85,8 +85,6 @@ async function extractTarGz(tarGzBuffer: Buffer, targetDir: string): Promise<voi
   while (offset < tarBuffer.length - 512) {
     const endOffset = offset + 512;
     const header = tarBuffer.subarray(offset, Math.min(endOffset, tarBuffer.length));
-    
-    // Check for null block (end of tar)
     if (header.every((byte) => byte === 0)) break;
 
     const rawName = header.subarray(0, 100).toString("utf-8").replace(/\0/g, "").trim();
@@ -96,29 +94,25 @@ async function extractTarGz(tarGzBuffer: Buffer, targetDir: string): Promise<voi
     const size = parseInt(sizeStr, 8) || 0;
     const typeFlag = String.fromCharCode(header[156] ?? 0);
 
-    // Standard npm packages nest files under "package/"
     const relativePath = rawName.replace(/^package\//, "");
     const destPath = path.join(targetDir, relativePath);
 
     offset += 512;
 
     if (typeFlag === "5" || rawName.endsWith("/")) {
-      // Directory
       if (!fs.existsSync(destPath)) fs.mkdirSync(destPath, { recursive: true });
     } else if (typeFlag === "0" || typeFlag === "\0") {
-      // Regular file
       const fileData = tarBuffer.subarray(offset, offset + size);
       const parent = path.dirname(destPath);
       if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
       fs.writeFileSync(destPath, fileData);
     }
 
-    // Records are 512-byte aligned
     offset += Math.ceil(size / 512) * 512;
   }
 }
 
-/* --- Self-Installer & HTTP Helpers --- */
+/* --- HTTP Helpers --- */
 function httpsGetBuffer(url: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     https.get(url, { headers: { "User-Agent": "optiprune" } }, (res) => {
@@ -158,11 +152,8 @@ async function handleUpdate(target: "core" | "cli", rootDir: string) {
     console.log(`Downloading and installing ${bold(pkgName)}...`);
 
     const tarball = await httpsGetBuffer(meta.tarball);
-
-    // Resolve target install directory
     let installTarget = path.join(rootDir, "node_modules", ...pkgName.split("/"));
     if (target === "cli") {
-      // If run via npx or global, install in global / CLI package directory
       const cliRoot = path.dirname(fileURLToPath(import.meta.url));
       installTarget = path.resolve(cliRoot, "..");
     }
@@ -174,24 +165,55 @@ async function handleUpdate(target: "core" | "cli", rootDir: string) {
   }
 }
 
-/* --- Schema Fetcher --- */
+/* --- Schema Fetcher (Offline Priority) --- */
 async function loadSchema(rootDir: string): Promise<Record<string, any>> {
-  const schemaPath = path.join(getGlobalConfigDir(), "schema.json");
+  // 1. Try directly from @optiprune/core in node_modules or ESM resolution
+  const candidateLocalPaths = [
+    path.join(rootDir, "node_modules/@optiprune/core/schema.json"),
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../node_modules/@optiprune/core/schema.json"),
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../core/schema.json"),
+  ];
+
+  for (const candidate of candidateLocalPaths) {
+    if (fs.existsSync(candidate)) {
+      try {
+        return JSON.parse(fs.readFileSync(candidate, "utf-8"));
+      } catch {}
+    }
+  }
+
+  // 2. Try global cached schema
+  const cachedSchemaPath = path.join(getGlobalConfigDir(), "schema.json");
+  if (fs.existsSync(cachedSchemaPath)) {
+    try {
+      return JSON.parse(fs.readFileSync(cachedSchemaPath, "utf-8"));
+    } catch {}
+  }
+
+  // 3. Fallback: Remote fetch (only if local files are missing)
   try {
     const remote = await httpsGetBuffer("https://raw.githubusercontent.com/optiprune/core/refs/heads/main/schema.json");
     const json = JSON.parse(remote.toString("utf-8"));
-    fs.writeFileSync(schemaPath, JSON.stringify(json, null, 2), "utf-8");
+    fs.writeFileSync(cachedSchemaPath, JSON.stringify(json, null, 2), "utf-8");
     return json;
-  } catch {
-    if (fs.existsSync(schemaPath)) {
-      return JSON.parse(fs.readFileSync(schemaPath, "utf-8"));
-    }
-    const local = path.join(rootDir, "node_modules/@optiprune/core/schema.json");
-    if (fs.existsSync(local)) {
-      return JSON.parse(fs.readFileSync(local, "utf-8"));
-    }
-  }
+  } catch {}
+
+  // 4. Default fallback
   return { properties: DEFAULT_CONFIG ?? {} };
+}
+
+/* --- Prompt Input Helper --- */
+function promptUser(promptText: string, initialValue: string = ""): Promise<string> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    rl.question(promptText, (answer) => {
+      rl.close();
+      resolve(answer.trim() || initialValue);
+    });
+  });
 }
 
 /* --- Hierarchical Tree CLI Navigation UI --- */
@@ -221,7 +243,6 @@ async function runInteractiveMenu(rootName: string, items: MenuItem[]): Promise<
       console.clear();
       console.log(bold(cyan(rootName)));
 
-      // Render parent ancestor levels
       let indent = "  ";
       for (let i = 0; i < breadcrumbs.length; i++) {
         const crumb = breadcrumbs[i]!;
@@ -230,7 +251,6 @@ async function runInteractiveMenu(rootName: string, items: MenuItem[]): Promise<
         indent += "     ";
       }
 
-      // Render current level
       currentItems.forEach((item, idx) => {
         const isLast = idx === currentItems.length - 1;
         console.log(renderTreeBranch(indent, isLast, item.name, idx === selectedIndex));
@@ -286,10 +306,11 @@ async function runInteractiveMenu(rootName: string, items: MenuItem[]): Promise<
   });
 }
 
-/* --- 10-Item Paginated Config Editor --- */
+/* --- Schema-Driven Config Editor --- */
 async function runConfigViewer(scope: "global" | "local", rootDir: string) {
   const schema = await loadSchema(rootDir);
-  const keys = Object.keys(schema.properties || DEFAULT_CONFIG || {});
+  const properties = schema.properties || DEFAULT_CONFIG || {};
+  const keys = Object.keys(properties).filter((k) => k !== "$schema");
   const filePath = scope === "global" ? getGlobalConfigPath() : getLocalConfigPath(rootDir);
 
   let currentConfig: Record<string, any> = {};
@@ -299,35 +320,64 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
     } catch {}
   }
 
-  const PAGE_SIZE = 10;
+  const PAGE_SIZE = 8;
   let currentPage = 0;
   let selectedIndex = 0;
   const totalPages = Math.ceil(keys.length / PAGE_SIZE);
 
-  readline.emitKeypressEvents(process.stdin);
-  if (process.stdin.isTTY) process.stdin.setRawMode(true);
-
   return new Promise<void>((resolve) => {
+    function setupRawMode() {
+      readline.emitKeypressEvents(process.stdin);
+      if (process.stdin.isTTY) process.stdin.setRawMode(true);
+      process.stdin.on("keypress", onKeypress);
+    }
+
+    function teardownRawMode() {
+      process.stdin.removeListener("keypress", onKeypress);
+      if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    }
+
     function render() {
       console.clear();
       console.log(bold(cyan(`optiprune > config > ${scope}`)));
       console.log(dim(`File: ${filePath}`));
-      console.log(dim(`Page ${currentPage + 1}/${totalPages} — [↑/↓] Select  •  [←/→] Prev/Next Page  •  [Enter] Toggle  •  [Esc] Back\n`));
+      console.log(dim(`Page ${currentPage + 1}/${totalPages} — [↑/↓] Select  •  [←/→] Page  •  [Enter] Edit/Toggle  •  [d] Reset to Default  •  [Esc] Back\n`));
 
       const pageKeys = keys.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
+      const activeKey = pageKeys[selectedIndex];
+      const activeDef = activeKey ? properties[activeKey] : null;
 
       pageKeys.forEach((keyName, idx) => {
         const isSelected = idx === selectedIndex;
         const val = currentConfig[keyName];
         const valDisplay = val !== undefined ? JSON.stringify(val) : dim("(not set)");
-        const line = `  ${keyName.padEnd(30)} : ${valDisplay}`;
+        const line = `  ${keyName.padEnd(28)} : ${valDisplay}`;
         console.log(isSelected ? inverse(line) : line);
       });
+
+      // Render contextual help block for the currently highlighted property
+      if (activeKey && activeDef) {
+        console.log("\n" + dim("─".repeat(70)));
+        console.log(`${bold(activeKey)} ${dim(`[${activeDef.type || (activeDef.oneOf ? "union" : "mixed")}]`)}`);
+        if (activeDef.description) {
+          console.log(cyan(`Description: `) + activeDef.description);
+        }
+        if (activeDef.enum) {
+          console.log(yellow(`Allowed values: `) + activeDef.enum.map((e: any) => JSON.stringify(e)).join(", "));
+        }
+        if (activeDef.default !== undefined) {
+          console.log(dim(`Default: `) + JSON.stringify(activeDef.default));
+        }
+        if (activeDef.examples) {
+          console.log(dim(`Examples: `) + JSON.stringify(activeDef.examples));
+        }
+        console.log(dim("─".repeat(70)));
+      }
     }
 
-    function onKeypress(_: any, key: any) {
+    async function onKeypress(_: any, key: any) {
       if ((key.ctrl && key.name === "c") || key.name === "escape") {
-        cleanup();
+        teardownRawMode();
         resolve();
         return;
       }
@@ -352,30 +402,65 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
           selectedIndex = 0;
           render();
         }
+      } else if (key.name === "d") {
+        // Reset to default
+        const pageKeys = keys.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
+        const activeKey = pageKeys[selectedIndex];
+        if (activeKey) {
+          delete currentConfig[activeKey];
+          fs.writeFileSync(filePath, JSON.stringify(currentConfig, null, 2), "utf-8");
+          render();
+        }
       } else if (key.name === "return") {
         const pageKeys = keys.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
         const activeKey = pageKeys[selectedIndex];
         if (!activeKey) return;
 
-        // Toggle boolean or set empty array/string based on schema
-        if (typeof currentConfig[activeKey] === "boolean") {
-          currentConfig[activeKey] = !currentConfig[activeKey];
-        } else if (currentConfig[activeKey] === undefined) {
-          currentConfig[activeKey] = true;
-        } else {
-          delete currentConfig[activeKey];
+        const propSchema = properties[activeKey] ?? {};
+
+        // Case 1: Enum property (cycle options)
+        if (Array.isArray(propSchema.enum)) {
+          const options = propSchema.enum;
+          const current = currentConfig[activeKey] ?? propSchema.default ?? options[0];
+          const nextIndex = (options.indexOf(current) + 1) % options.length;
+          currentConfig[activeKey] = options[nextIndex];
+          fs.writeFileSync(filePath, JSON.stringify(currentConfig, null, 2), "utf-8");
+          render();
+          return;
         }
+
+        // Case 2: Boolean property (toggle)
+        if (propSchema.type === "boolean") {
+          const current = currentConfig[activeKey] ?? propSchema.default ?? false;
+          currentConfig[activeKey] = !current;
+          fs.writeFileSync(filePath, JSON.stringify(currentConfig, null, 2), "utf-8");
+          render();
+          return;
+        }
+
+        // Case 3: Prompt interactive text for arrays, objects, numbers, and strings
+        teardownRawMode();
+        console.log(`\nEnter new JSON or literal value for ${bold(activeKey)}:`);
+        console.log(dim(`(Leave empty to cancel, or type 'undefined' to remove)`));
+
+        const rawInput = await promptUser(`> `);
+        if (rawInput === "undefined") {
+          delete currentConfig[activeKey];
+        } else if (rawInput.trim().length > 0) {
+          try {
+            currentConfig[activeKey] = JSON.parse(rawInput);
+          } catch {
+            currentConfig[activeKey] = rawInput;
+          }
+        }
+
         fs.writeFileSync(filePath, JSON.stringify(currentConfig, null, 2), "utf-8");
+        setupRawMode();
         render();
       }
     }
 
-    function cleanup() {
-      process.stdin.removeListener("keypress", onKeypress);
-      if (process.stdin.isTTY) process.stdin.setRawMode(false);
-    }
-
-    process.stdin.on("keypress", onKeypress);
+    setupRawMode();
     render();
   });
 }
@@ -457,7 +542,6 @@ async function runAnalyze(args: string[]) {
   const globalConfig = fs.existsSync(getGlobalConfigPath()) ? JSON.parse(fs.readFileSync(getGlobalConfigPath(), "utf-8")) : {};
   const fileConfig: Config = typeof loadConfig === "function" ? await loadConfig(targetRootDir) : {};
   
-  // Resolve fix configurations
   let fixOption: boolean | FixConfig | undefined = undefined;
   const hasExplicitFix = isCliOverride("fix");
   const hasJsonFix = isCliOverride("fix-json") && Boolean(values["fix-json"]);
@@ -664,7 +748,6 @@ async function main() {
     }
   }
 
-  // Interactive menu tree
   const menu: MenuItem[] = [
     {
       name: "prune",
