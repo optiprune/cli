@@ -2,40 +2,31 @@
 
 import path from "pathe";
 import fs from "node:fs";
+import os from "node:os";
+import https from "node:https";
+import readline from "node:readline";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { assertPluginsExist } from "./plugin-resolution.js";
-
-const FIX_TARGETS = new Set(["files", "exports", "dependencies", "devDependencies", "conditions", "json"]);
-
-const TEST_IGNORE_PATTERNS = [
-  "**/test/**",
-  "**/tests/**",
-  "**/fixtures/**",
-  "**/__tests__/**",
-  "**/*.test.ts",
-  "**/*.test.js",
-  "**/*.test.tsx",
-  "**/*.test.jsx",
-  "**/*.spec.ts",
-  "**/*.spec.js",
-  "**/*.spec.tsx",
-  "**/*.spec.jsx",
-];
 
 // @ts-ignore
 import { analyze, shouldFail, exportCache, importCache, loadConfig, mergeConfig, DEFAULT_CONFIG } from "@optiprune/core";
 // @ts-ignore
 import { formatTerminal, formatSarif } from "@optiprune/core/reporters";
 // @ts-ignore
-import type { AnalyzerOptions, AnalysisReport, Finding, FixConfig, Config, ResolvedOptions } from "@optiprune/core/types";
+import type { AnalyzerOptions, AnalysisReport, FixConfig, Config, ResolvedOptions } from "@optiprune/core/types";
 
-/** ANSI colour helpers */
-const bold   = (s: string) => `\x1b[1m${s}\x1b[0m`;
-const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
-const red    = (s: string) => `\x1b[31m${s}\x1b[0m`;
-const dim    = (s: string) => `\x1b[2m${s}\x1b[0m`;
+/* --- ANSI Colors --- */
+const bold    = (s: string) => `\x1b[1m${s}\x1b[0m`;
+const green   = (s: string) => `\x1b[32m${s}\x1b[0m`;
+const yellow  = (s: string) => `\x1b[33m${s}\x1b[0m`;
+const cyan    = (s: string) => `\x1b[36m${s}\x1b[0m`;
+const red     = (s: string) => `\x1b[31m${s}\x1b[0m`;
+const dim     = (s: string) => `\x1b[2m${s}\x1b[0m`;
+const inverse = (s: string) => `\x1b[7m${s}\x1b[0m`;
 
+/* --- Paths & Config Resolution --- */
 function getCliVersion(): string {
   try {
     const currentDir = path.dirname(fileURLToPath(import.meta.url));
@@ -48,7 +39,7 @@ function getCliVersion(): string {
       }
       dir = path.dirname(dir);
     }
-  } catch (e) {}
+  } catch {}
   return "unknown";
 }
 
@@ -56,72 +47,347 @@ function getCoreVersion(rootDir: string): string {
   try {
     const localCore = path.join(rootDir, "node_modules/@optiprune/core/package.json");
     if (fs.existsSync(localCore)) {
-      const content = fs.readFileSync(localCore, "utf-8");
-      const pkg = JSON.parse(content);
+      const pkg = JSON.parse(fs.readFileSync(localCore, "utf-8"));
       if (pkg.version) return pkg.version;
     }
-
     const cliDir = path.dirname(fileURLToPath(import.meta.url));
     const siblingCore = path.join(cliDir, "../core/package.json");
     if (fs.existsSync(siblingCore)) {
-      const content = fs.readFileSync(siblingCore, "utf-8");
-      const pkg = JSON.parse(content);
+      const pkg = JSON.parse(fs.readFileSync(siblingCore, "utf-8"));
       if (pkg.version) return pkg.version;
     }
-  } catch (e) {}
+  } catch {}
   return "1.12.1";
 }
 
-function printHelp(): void {
-  console.log(`
-Usage: optiprune [command] [options]
-
-Finds dead code in TypeScript/JavaScript projects.
-
-Commands:
-  analyze [options]                 Perform full analysis of the project (default)
-  export-cache <targetPath>         Export current analysis cache to a JSON file
-  import-cache <sourcePath>         Import cache JSON file into local directory
-
-Options:
-  -V, --version                     Output the version number
-  -h, --help                        Display this help text
-
-Analyze Options:
-  -r, --rootDir <path>              Root directory of project (default: cwd)
-  -e, --entry <patterns...>         Entry point patterns
-  -x, --extensions <exts...>        Extensions to analyze (default: .ts .tsx .js .jsx .vue)
-  -i, --ignore <patterns...>        Ignore patterns (glob)
-  --no-report-unused-exports        Do not report unused exports
-  --no-conventional-entries         Do not include conventional entry points
-  --include-entry-exports           Report unused exports in entry files
-  --include-entry-members           Report unused members in entry files
-  --cycles                          Print detected dependency cycles
-  --ignore-tests                    Ignore test files and fixtures
-  --ignore-unknown-import           Ignore dynamic/unknown import reachability
-  --fail-on <confidence>            Fail confidence: high, medium, low, none (default: high)
-  --json                            Output results as JSON
-  --sarif                           Output results in SARIF format
-  --skip <layers...>                Skip analysis layers: 3, 4, smt
-  -v, --verbose                     Show verbose output and internal graph state
-  --fix <rules...>                  Fix targets: files, exports, dependencies, etc.
-  --fix-json                        Safely repair recoverable package.json JSON errors
-  --plugins <names...>              Force-enable plugins by name (e.g. astro vite vitest)
-  --confidence <level>              Min fix confidence: high, medium+, low+, all (default: high)
-  --force                           Allow unsafe fixes
-  --dry-run                         Log fixes without writing files
-  --cache-from <path>               Import cache JSON prior to analysis
-  --cache-to <path>                 Export resulting cache to JSON after analysis
-  --stop-new-cache-on-update        Reuse cache across Core or plugin version updates
-`);
+function getGlobalConfigDir(): string {
+  const home = os.homedir();
+  const dir = process.platform === "win32"
+    ? path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "optiprune")
+    : path.join(home, ".config", "optiprune");
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
 }
 
-/** Preprocesses arguments so variadic flags work like Commander (e.g., `--extensions .ts .tsx`) */
+function getGlobalConfigPath(): string {
+  return path.join(getGlobalConfigDir(), "config.json");
+}
+
+function getLocalConfigPath(rootDir: string): string {
+  return path.join(rootDir, "optiprune.config.json");
+}
+
+/* --- Built-in Pure Node Tar Extractor (Zero External Dependencies) --- */
+async function extractTarGz(tarGzBuffer: Buffer, targetDir: string): Promise<void> {
+  const tarBuffer = zlib.gunzipSync(tarGzBuffer);
+  let offset = 0;
+
+  while (offset < tarBuffer.length - 512) {
+    const endOffset = offset + 512;
+    const header = tarBuffer.subarray(offset, Math.min(endOffset, tarBuffer.length));
+    
+    // Check for null block (end of tar)
+    if (header.every((byte) => byte === 0)) break;
+
+    const rawName = header.subarray(0, 100).toString("utf-8").replace(/\0/g, "").trim();
+    if (!rawName) break;
+
+    const sizeStr = header.subarray(124, 136).toString("utf-8").replace(/\0/g, "").trim();
+    const size = parseInt(sizeStr, 8) || 0;
+    const typeFlag = String.fromCharCode(header[156] ?? 0);
+
+    // Standard npm packages nest files under "package/"
+    const relativePath = rawName.replace(/^package\//, "");
+    const destPath = path.join(targetDir, relativePath);
+
+    offset += 512;
+
+    if (typeFlag === "5" || rawName.endsWith("/")) {
+      // Directory
+      if (!fs.existsSync(destPath)) fs.mkdirSync(destPath, { recursive: true });
+    } else if (typeFlag === "0" || typeFlag === "\0") {
+      // Regular file
+      const fileData = tarBuffer.subarray(offset, offset + size);
+      const parent = path.dirname(destPath);
+      if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
+      fs.writeFileSync(destPath, fileData);
+    }
+
+    // Records are 512-byte aligned
+    offset += Math.ceil(size / 512) * 512;
+  }
+}
+
+/* --- Self-Installer & HTTP Helpers --- */
+function httpsGetBuffer(url: string): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers: { "User-Agent": "optiprune" } }, (res) => {
+      const statusCode = res.statusCode ?? 0;
+      if (statusCode >= 300 && statusCode < 400 && res.headers.location) {
+        return resolve(httpsGetBuffer(res.headers.location));
+      }
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve(Buffer.concat(chunks)));
+    }).on("error", reject);
+  });
+}
+
+async function fetchLatestPackageMeta(packageName: string): Promise<{ version: string; tarball: string }> {
+  const raw = await httpsGetBuffer(`https://registry.npmjs.org/${packageName}/latest`);
+  const json = JSON.parse(raw.toString("utf-8"));
+  return {
+    version: json.version,
+    tarball: json.dist.tarball,
+  };
+}
+
+async function handleUpdate(target: "core" | "cli", rootDir: string) {
+  const pkgName = target === "core" ? "@optiprune/core" : "@optiprune/cli";
+  const currentVersion = target === "core" ? getCoreVersion(rootDir) : getCliVersion();
+
+  console.log(`\nChecking updates for ${bold(pkgName)}...`);
+  try {
+    const meta = await fetchLatestPackageMeta(pkgName);
+    if (meta.version === currentVersion) {
+      console.log(`${green("✔")} on the latest version (${meta.version})\n`);
+      return;
+    }
+
+    console.log(`${yellow("!")} Update available: ${dim(currentVersion)} → ${green(meta.version)}`);
+    console.log(`Downloading and installing ${bold(pkgName)}...`);
+
+    const tarball = await httpsGetBuffer(meta.tarball);
+
+    // Resolve target install directory
+    let installTarget = path.join(rootDir, "node_modules", ...pkgName.split("/"));
+    if (target === "cli") {
+      // If run via npx or global, install in global / CLI package directory
+      const cliRoot = path.dirname(fileURLToPath(import.meta.url));
+      installTarget = path.resolve(cliRoot, "..");
+    }
+
+    await extractTarGz(tarball, installTarget);
+    console.log(`${green("✔")} Successfully updated ${bold(pkgName)} to version ${meta.version}\n`);
+  } catch (err: any) {
+    console.error(`${red("✖")} Failed to update: ${err?.message ?? err}\n`);
+  }
+}
+
+/* --- Schema Fetcher --- */
+async function loadSchema(rootDir: string): Promise<Record<string, any>> {
+  const schemaPath = path.join(getGlobalConfigDir(), "schema.json");
+  try {
+    const remote = await httpsGetBuffer("https://raw.githubusercontent.com/optiprune/core/refs/heads/main/schema.json");
+    const json = JSON.parse(remote.toString("utf-8"));
+    fs.writeFileSync(schemaPath, JSON.stringify(json, null, 2), "utf-8");
+    return json;
+  } catch {
+    if (fs.existsSync(schemaPath)) {
+      return JSON.parse(fs.readFileSync(schemaPath, "utf-8"));
+    }
+    const local = path.join(rootDir, "node_modules/@optiprune/core/schema.json");
+    if (fs.existsSync(local)) {
+      return JSON.parse(fs.readFileSync(local, "utf-8"));
+    }
+  }
+  return { properties: DEFAULT_CONFIG ?? {} };
+}
+
+/* --- Hierarchical Tree CLI Navigation UI --- */
+interface MenuItem {
+  name: string;
+  action?: () => Promise<void> | void;
+  children?: MenuItem[];
+}
+
+function renderTreeBranch(prefix: string, isLast: boolean, label: string, isSelected: boolean): string {
+  const marker = isLast ? "└─ " : "├─ ";
+  const text = isSelected ? inverse(` ${label} `) : label;
+  const cursor = isSelected ? cyan("❯ ") : "  ";
+  return `${cursor}${dim(prefix + marker)}${text}`;
+}
+
+async function runInteractiveMenu(rootName: string, items: MenuItem[]): Promise<void> {
+  const breadcrumbs: { name: string; items: MenuItem[]; selectedIndex: number }[] = [];
+  let currentItems = items;
+  let selectedIndex = 0;
+
+  readline.emitKeypressEvents(process.stdin);
+  if (process.stdin.isTTY) process.stdin.setRawMode(true);
+
+  return new Promise<void>((resolve) => {
+    function render() {
+      console.clear();
+      console.log(bold(cyan(rootName)));
+
+      // Render parent ancestor levels
+      let indent = "  ";
+      for (let i = 0; i < breadcrumbs.length; i++) {
+        const crumb = breadcrumbs[i]!;
+        const isLastAncestor = i === breadcrumbs.length - 1;
+        console.log(`${"  ".repeat(i + 1)}${dim(isLastAncestor ? "└─ " : "├─ ")}${bold(crumb.name)}`);
+        indent += "     ";
+      }
+
+      // Render current level
+      currentItems.forEach((item, idx) => {
+        const isLast = idx === currentItems.length - 1;
+        console.log(renderTreeBranch(indent, isLast, item.name, idx === selectedIndex));
+      });
+
+      console.log(dim("\n[↑/↓] Navigate  •  [→/Enter] Select  •  [←/Esc] Back  •  [Ctrl+C] Exit"));
+    }
+
+    async function onKeypress(_: any, key: any) {
+      if (key.ctrl && key.name === "c") {
+        cleanup();
+        process.exit(0);
+      }
+
+      if (key.name === "up") {
+        selectedIndex = (selectedIndex - 1 + currentItems.length) % currentItems.length;
+        render();
+      } else if (key.name === "down") {
+        selectedIndex = (selectedIndex + 1) % currentItems.length;
+        render();
+      } else if (key.name === "right" || key.name === "return") {
+        const item = currentItems[selectedIndex];
+        if (item?.children) {
+          breadcrumbs.push({ name: item.name, items: currentItems, selectedIndex });
+          currentItems = item.children;
+          selectedIndex = 0;
+          render();
+        } else if (item?.action) {
+          cleanup();
+          await item.action();
+          resolve();
+        }
+      } else if (key.name === "left" || key.name === "escape") {
+        if (breadcrumbs.length > 0) {
+          const parent = breadcrumbs.pop()!;
+          currentItems = parent.items;
+          selectedIndex = parent.selectedIndex;
+          render();
+        } else {
+          cleanup();
+          resolve();
+        }
+      }
+    }
+
+    function cleanup() {
+      process.stdin.removeListener("keypress", onKeypress);
+      if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    }
+
+    process.stdin.on("keypress", onKeypress);
+    render();
+  });
+}
+
+/* --- 10-Item Paginated Config Editor --- */
+async function runConfigViewer(scope: "global" | "local", rootDir: string) {
+  const schema = await loadSchema(rootDir);
+  const keys = Object.keys(schema.properties || DEFAULT_CONFIG || {});
+  const filePath = scope === "global" ? getGlobalConfigPath() : getLocalConfigPath(rootDir);
+
+  let currentConfig: Record<string, any> = {};
+  if (fs.existsSync(filePath)) {
+    try {
+      currentConfig = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    } catch {}
+  }
+
+  const PAGE_SIZE = 10;
+  let currentPage = 0;
+  let selectedIndex = 0;
+  const totalPages = Math.ceil(keys.length / PAGE_SIZE);
+
+  readline.emitKeypressEvents(process.stdin);
+  if (process.stdin.isTTY) process.stdin.setRawMode(true);
+
+  return new Promise<void>((resolve) => {
+    function render() {
+      console.clear();
+      console.log(bold(cyan(`optiprune > config > ${scope}`)));
+      console.log(dim(`File: ${filePath}`));
+      console.log(dim(`Page ${currentPage + 1}/${totalPages} — [↑/↓] Select  •  [←/→] Prev/Next Page  •  [Enter] Toggle  •  [Esc] Back\n`));
+
+      const pageKeys = keys.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
+
+      pageKeys.forEach((keyName, idx) => {
+        const isSelected = idx === selectedIndex;
+        const val = currentConfig[keyName];
+        const valDisplay = val !== undefined ? JSON.stringify(val) : dim("(not set)");
+        const line = `  ${keyName.padEnd(30)} : ${valDisplay}`;
+        console.log(isSelected ? inverse(line) : line);
+      });
+    }
+
+    function onKeypress(_: any, key: any) {
+      if ((key.ctrl && key.name === "c") || key.name === "escape") {
+        cleanup();
+        resolve();
+        return;
+      }
+
+      const pageCount = keys.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE).length;
+
+      if (key.name === "up") {
+        selectedIndex = (selectedIndex - 1 + pageCount) % pageCount;
+        render();
+      } else if (key.name === "down") {
+        selectedIndex = (selectedIndex + 1) % pageCount;
+        render();
+      } else if (key.name === "right") {
+        if (currentPage < totalPages - 1) {
+          currentPage++;
+          selectedIndex = 0;
+          render();
+        }
+      } else if (key.name === "left") {
+        if (currentPage > 0) {
+          currentPage--;
+          selectedIndex = 0;
+          render();
+        }
+      } else if (key.name === "return") {
+        const pageKeys = keys.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
+        const activeKey = pageKeys[selectedIndex];
+        if (!activeKey) return;
+
+        // Toggle boolean or set empty array/string based on schema
+        if (typeof currentConfig[activeKey] === "boolean") {
+          currentConfig[activeKey] = !currentConfig[activeKey];
+        } else if (currentConfig[activeKey] === undefined) {
+          currentConfig[activeKey] = true;
+        } else {
+          delete currentConfig[activeKey];
+        }
+        fs.writeFileSync(filePath, JSON.stringify(currentConfig, null, 2), "utf-8");
+        render();
+      }
+    }
+
+    function cleanup() {
+      process.stdin.removeListener("keypress", onKeypress);
+      if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    }
+
+    process.stdin.on("keypress", onKeypress);
+    render();
+  });
+}
+
+/* --- Analysis Logic --- */
+const FIX_TARGETS = new Set(["files", "exports", "dependencies", "devDependencies", "conditions", "json"]);
+const TEST_IGNORE_PATTERNS = ["**/test/**", "**/tests/**", "**/fixtures/**", "**/__tests__/**", "**/*.test.*", "**/*.spec.*"];
+
 function normalizeVariadicFlags(args: string[], variadicNames: string[]): string[] {
   const result: string[] = [];
   const variadicSet = new Set(variadicNames);
   let currentFlag: string | null = null;
-
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
     if (arg.startsWith("-")) {
@@ -141,51 +407,41 @@ function normalizeVariadicFlags(args: string[], variadicNames: string[]): string
 
 async function runAnalyze(args: string[]) {
   const normalizedArgs = normalizeVariadicFlags(args, ["entry", "e", "extensions", "x", "ignore", "i", "skip", "fix", "plugins"]);
-
-  const optionsConfig = {
-    help: { type: "boolean" as const, short: "h" },
-    rootDir: { type: "string" as const, short: "r" },
-    entry: { type: "string" as const, short: "e", multiple: true },
-    extensions: { type: "string" as const, short: "x", multiple: true },
-    ignore: { type: "string" as const, short: "i", multiple: true },
-    "report-unused-exports": { type: "boolean" as const, default: true },
-    "no-report-unused-exports": { type: "boolean" as const },
-    "conventional-entries": { type: "boolean" as const, default: true },
-    "no-conventional-entries": { type: "boolean" as const },
-    "include-entry-exports": { type: "boolean" as const },
-    "include-entry-members": { type: "boolean" as const },
-    cycles: { type: "boolean" as const },
-    "ignore-tests": { type: "boolean" as const },
-    "ignore-unknown-import": { type: "boolean" as const },
-    "fail-on": { type: "string" as const, default: "high" },
-    json: { type: "boolean" as const },
-    sarif: { type: "boolean" as const },
-    skip: { type: "string" as const, multiple: true },
-    verbose: { type: "boolean" as const, short: "v" },
-    fix: { type: "string" as const, multiple: true },
-    "fix-json": { type: "boolean" as const },
-    plugins: { type: "string" as const, multiple: true },
-    confidence: { type: "string" as const, default: "high" },
-    force: { type: "boolean" as const },
-    "dry-run": { type: "boolean" as const },
-    "cache-from": { type: "string" as const },
-    "cache-to": { type: "string" as const },
-    "stop-new-cache-on-update": { type: "boolean" as const },
-  };
-
   const { values } = parseArgs({
     args: normalizedArgs,
-    options: optionsConfig,
-    strict: true,
+    options: {
+      rootDir: { type: "string", short: "r" },
+      entry: { type: "string", short: "e", multiple: true },
+      extensions: { type: "string", short: "x", multiple: true },
+      ignore: { type: "string", short: "i", multiple: true },
+      "report-unused-exports": { type: "boolean", default: true },
+      "no-report-unused-exports": { type: "boolean" },
+      "conventional-entries": { type: "boolean", default: true },
+      "no-conventional-entries": { type: "boolean" },
+      "include-entry-exports": { type: "boolean" },
+      "include-entry-members": { type: "boolean" },
+      cycles: { type: "boolean" },
+      "ignore-tests": { type: "boolean" },
+      "ignore-unknown-import": { type: "boolean" },
+      "fail-on": { type: "string", default: "high" },
+      json: { type: "boolean" },
+      sarif: { type: "boolean" },
+      skip: { type: "string", multiple: true },
+      verbose: { type: "boolean", short: "v" },
+      fix: { type: "string", multiple: true },
+      "fix-json": { type: "boolean" },
+      plugins: { type: "string", multiple: true },
+      confidence: { type: "string", default: "high" },
+      force: { type: "boolean" },
+      "dry-run": { type: "boolean" },
+      "cache-from": { type: "string" },
+      "cache-to": { type: "string" },
+      "stop-new-cache-on-update": { type: "boolean" },
+    },
+    strict: false,
     allowPositionals: false,
   });
 
-  if (values.help) {
-    printHelp();
-    return;
-  }
-
-  // Checks both long form (--rootDir) and short alias (-r), supporting inline '='
   const isCliOverride = (longFlag: string, shortFlag?: string) => {
     return args.some((arg) => {
       const base = arg.split("=")[0];
@@ -198,11 +454,10 @@ async function runAnalyze(args: string[]) {
   };
 
   const targetRootDir = path.resolve((values.rootDir as string | undefined) ?? process.cwd());
-
-  // 1. Read project config via core's loadConfig
+  const globalConfig = fs.existsSync(getGlobalConfigPath()) ? JSON.parse(fs.readFileSync(getGlobalConfigPath(), "utf-8")) : {};
   const fileConfig: Config = typeof loadConfig === "function" ? await loadConfig(targetRootDir) : {};
-
-  // 2. Resolve fix configurations
+  
+  // Resolve fix configurations
   let fixOption: boolean | FixConfig | undefined = undefined;
   const hasExplicitFix = isCliOverride("fix");
   const hasJsonFix = isCliOverride("fix-json") && Boolean(values["fix-json"]);
@@ -231,26 +486,22 @@ async function runAnalyze(args: string[]) {
     } as unknown as FixConfig;
   }
 
-  // 3. Determine if test ignoring is active
   const shouldIgnoreTests = isCliOverride("ignore-tests")
     ? Boolean(values["ignore-tests"])
-    : Boolean(fileConfig.ignoreTests);
+    : Boolean(fileConfig.ignoreTests ?? globalConfig.ignoreTests);
 
-  // 4. Resolve ignore patterns
   let mergedIgnore: string[] | undefined = undefined;
   const cliIgnore = isCliOverride("ignore", "i") ? (values.ignore as string[] | undefined) : undefined;
-  const baseIgnore = cliIgnore ?? (Array.isArray(fileConfig.ignore) ? fileConfig.ignore : []);
+  const baseIgnore = cliIgnore ?? (Array.isArray(fileConfig.ignore) ? fileConfig.ignore : (Array.isArray(globalConfig.ignore) ? globalConfig.ignore : []));
 
   if (shouldIgnoreTests || baseIgnore.length > 0) {
     const testGlobs = shouldIgnoreTests ? TEST_IGNORE_PATTERNS : [];
     mergedIgnore = Array.from(new Set([...testGlobs, ...baseIgnore]));
   }
 
-  // 5. Resolve explicitly requested plugins
   const requestedPlugins = isCliOverride("plugins") ? ((values.plugins as string[] | undefined) ?? []) : [];
   const resolvedPlugins = requestedPlugins.length > 0 ? assertPluginsExist(requestedPlugins) : [];
 
-  // 6. Build CLI overrides
   const skipValues = isCliOverride("skip") ? ((values.skip as string[] | undefined) ?? []) : [];
   const normalizedSkipValues = skipValues.map((v) => v.toLowerCase());
   const invalidSkipValues = normalizedSkipValues.filter((value) => !["3", "4", "smt"].includes(value));
@@ -259,6 +510,7 @@ async function runAnalyze(args: string[]) {
   }
 
   const skipLayers = {
+    ...(globalConfig.layers ?? {}),
     ...(fileConfig.layers ?? {}),
     ...(normalizedSkipValues.includes("3") && { skip3: true }),
     ...(normalizedSkipValues.includes("4") && { skip4: true }),
@@ -286,6 +538,7 @@ async function runAnalyze(args: string[]) {
     ...(isCliOverride("verbose", "v") && { verbose: Boolean(values.verbose) }),
     ...(isCliOverride("plugins") && {
       plugins: {
+        ...(globalConfig.plugins ?? {}),
         ...(fileConfig.plugins ?? {}),
         ...Object.fromEntries(resolvedPlugins.map((plugin) => [plugin, true])),
       },
@@ -296,7 +549,6 @@ async function runAnalyze(args: string[]) {
     ...(isCliOverride("stop-new-cache-on-update") && { stopNewCacheOnUpdate: Boolean(values["stop-new-cache-on-update"]) }),
   };
 
-  // 7. Merge DEFAULT_CONFIG -> fileConfig -> cliOverrides
   const baseConfig: ResolvedOptions = {
     ...DEFAULT_CONFIG,
     rootDir: targetRootDir,
@@ -318,7 +570,8 @@ async function runAnalyze(args: string[]) {
     frameworks: [...DEFAULT_CONFIG.frameworks],
   };
 
-  const resolvedWithFile = mergeConfig(baseConfig, fileConfig);
+  const resolvedWithGlobal = mergeConfig(baseConfig, globalConfig);
+  const resolvedWithFile = mergeConfig(resolvedWithGlobal, fileConfig);
   const finalConfig = mergeConfig(resolvedWithFile, cliOverrides);
 
   const report: AnalysisReport = await analyze(finalConfig as AnalyzerOptions);
@@ -328,11 +581,10 @@ async function runAnalyze(args: string[]) {
   } else if (finalConfig.json || values.json) {
     console.log(JSON.stringify(report, (k, v) => typeof v === "bigint" ? v.toString() : v, 2));
   } else {
-    const terminal = formatTerminal(report, { showCycles: Boolean(finalConfig.cycles) });
-    console.log(terminal);
+    console.log(formatTerminal(report, { showCycles: Boolean(finalConfig.cycles) }));
   }
 
-  const failTarget = (finalConfig.failOn ?? (values["fail-on"] as string | undefined) ?? "high") as any;
+  const failTarget = ((finalConfig.failOn ?? (values["fail-on"] as string | undefined) ?? "high")) as any;
   if (shouldFail(report, failTarget)) {
     process.exit(1);
   }
@@ -382,52 +634,84 @@ async function runImportCache(args: string[]) {
   console.log(`${yellow("✔")} Cache imported from ${bold(sourcePath)}`);
 }
 
+/* --- Entrypoint --- */
 async function main() {
   const rawArgs = process.argv.slice(2);
+  const rootDir = process.cwd();
 
   if (rawArgs.includes("-V") || rawArgs.includes("--version")) {
-    const cliVersion = getCliVersion();
-    const coreVersion = getCoreVersion(process.cwd());
-    console.log(`CLI: ${cliVersion}, Core: ${coreVersion}`);
+    console.log(`CLI: ${getCliVersion()}, Core: ${getCoreVersion(rootDir)}`);
     return;
   }
 
-  if (rawArgs.includes("-h") || rawArgs.includes("--help")) {
-    printHelp();
-    return;
-  }
-
-  const firstArg: string | undefined = rawArgs[0];
-  const subcommands = new Set(["analyze", "export-cache", "import-cache"]);
-
-  let command = "analyze";
-  let commandArgs: string[] = rawArgs;
-
-  if (firstArg !== undefined && subcommands.has(firstArg)) {
-    command = firstArg;
-    commandArgs = rawArgs.slice(1);
-  }
-
-  try {
-    switch (command) {
-      case "analyze":
-        await runAnalyze(commandArgs);
-        break;
-      case "export-cache":
-        await runExportCache(commandArgs);
-        break;
-      case "import-cache":
-        await runImportCache(commandArgs);
-        break;
+  if (rawArgs.length > 0) {
+    const firstArg = rawArgs[0];
+    if (firstArg === "analyze" || firstArg === "prune") {
+      await runAnalyze(rawArgs.slice(1));
+      return;
     }
-  } catch (error: any) {
-    if (command === "analyze") {
-      console.error("An unexpected error occurred during analysis:", error);
-    } else {
-      console.error(error?.message ?? error);
+    if (firstArg === "export-cache") {
+      await runExportCache(rawArgs.slice(1));
+      return;
     }
-    process.exit(1);
+    if (firstArg === "import-cache") {
+      await runImportCache(rawArgs.slice(1));
+      return;
+    }
+    if (firstArg?.startsWith("-")) {
+      await runAnalyze(rawArgs);
+      return;
+    }
   }
+
+  // Interactive menu tree
+  const menu: MenuItem[] = [
+    {
+      name: "prune",
+      action: async () => {
+        await runAnalyze([]);
+      },
+    },
+    {
+      name: "config",
+      children: [
+        {
+          name: "global",
+          action: async () => {
+            await runConfigViewer("global", rootDir);
+          },
+        },
+        {
+          name: "local",
+          action: async () => {
+            await runConfigViewer("local", rootDir);
+          },
+        },
+      ],
+    },
+    {
+      name: "update",
+      children: [
+        {
+          name: "core",
+          action: async () => {
+            await handleUpdate("core", rootDir);
+          },
+        },
+        {
+          name: "cli",
+          action: async () => {
+            await handleUpdate("cli", rootDir);
+          },
+        },
+      ],
+    },
+  ];
+
+  await runInteractiveMenu("optiprune", menu);
 }
 
-main();
+main().catch((err) => {
+  console.error(err?.message ?? err);
+  process.exit(1);
+});
