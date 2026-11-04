@@ -237,7 +237,7 @@ async function runInteractiveMenu(rootName: string, items: MenuItem[]): Promise<
 
   return new Promise<void>((resolve) => {
     function render() {
-      console.clear();
+      process.stdout.write("\x1b[2J\x1b[0f");
       console.log(bold(cyan(rootName)));
 
       let indent = "  ";
@@ -309,6 +309,7 @@ async function runInteractiveMenu(rootName: string, items: MenuItem[]): Promise<
 }
 
 /* --- Schema-Driven Config Editor --- */
+/* --- Schema-Driven Config Editor --- */
 async function runConfigViewer(scope: "global" | "local", rootDir: string) {
   const schema = await loadSchema(rootDir);
   const properties = schema.properties || DEFAULT_CONFIG || {};
@@ -322,7 +323,8 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
     } catch {}
   }
 
-  const PAGE_SIZE = 8;
+  // Reduced page size from 8 to 6 so everything stays well within terminal height
+  const PAGE_SIZE = 6;
   let currentPage = 0;
   let selectedIndex = 0;
   const totalPages = Math.ceil(keys.length / PAGE_SIZE);
@@ -342,10 +344,12 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
     }
 
     function render() {
-      console.clear();
+      // \x1b[2J clears screen, \x1b[3J clears scrollback, \x1b[H resets cursor to top-left
+      process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+
       console.log(bold(cyan(`optiprune > config > ${scope}`)));
       console.log(dim(`File: ${filePath}`));
-      console.log(dim(`Page ${currentPage + 1}/${totalPages} — [↑/↓] Select  •  [←/→] Page  •  [Enter] Edit/Toggle  •  [d] Reset to Default  •  [Esc] Back\n`));
+      console.log(dim(`Page ${currentPage + 1}/${totalPages} — [↑/↓] Select • [←/→] Page • [Enter] Toggle • [d] Reset • [Esc] Back\n`));
 
       const pageKeys = keys.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
       const activeKey = pageKeys[selectedIndex];
@@ -355,27 +359,30 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
         const isSelected = idx === selectedIndex;
         const val = currentConfig[keyName];
         const valDisplay = val !== undefined ? JSON.stringify(val) : dim("(not set)");
-        const line = `  ${keyName.padEnd(28)} : ${valDisplay}`;
+        const line = `  ${keyName.padEnd(26)} : ${valDisplay}`;
         console.log(isSelected ? inverse(line) : line);
       });
 
-      // Render contextual help block for the currently highlighted property
+      // Compact info section (prevents pushing menu off-screen)
       if (activeKey && activeDef) {
-        console.log("\n" + dim("─".repeat(70)));
-        console.log(`${bold(activeKey)} ${dim(`[${activeDef.type || (activeDef.oneOf ? "union" : "mixed")}]`)}`);
+        console.log("\n" + dim("─".repeat(60)));
+        const typeStr = activeDef.type || (activeDef.oneOf ? "union" : "mixed");
+        console.log(`${bold(activeKey)} ${dim(`[${typeStr}]`)}`);
+        
         if (activeDef.description) {
-          console.log(cyan(`Description: `) + activeDef.description);
+          // Truncate long descriptions to 1-2 concise lines
+          const shortDesc = activeDef.description.length > 120 
+            ? activeDef.description.slice(0, 117) + "..." 
+            : activeDef.description;
+          console.log(cyan("Info: ") + shortDesc);
         }
         if (activeDef.enum) {
-          console.log(yellow(`Allowed values: `) + activeDef.enum.map((e: any) => JSON.stringify(e)).join(", "));
+          console.log(yellow("Values: ") + activeDef.enum.map((e: any) => JSON.stringify(e)).join(", "));
         }
         if (activeDef.default !== undefined) {
-          console.log(dim(`Default: `) + JSON.stringify(activeDef.default));
+          console.log(dim("Default: ") + JSON.stringify(activeDef.default));
         }
-        if (activeDef.examples) {
-          console.log(dim(`Examples: `) + JSON.stringify(activeDef.examples));
-        }
-        console.log(dim("─".repeat(70)));
+        console.log(dim("─".repeat(60)));
       }
     }
 
@@ -407,7 +414,6 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
           render();
         }
       } else if (key.name === "d") {
-        // Reset to default
         const pageKeys = keys.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
         const activeKey = pageKeys[selectedIndex];
         if (activeKey) {
@@ -444,7 +450,7 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
 
         // Case 3: Prompt interactive text for arrays, objects, numbers, and strings
         teardownRawMode();
-        console.log(`\nEnter new JSON or literal value for ${bold(activeKey)}:`);
+        console.log(`\nEnter new value for ${bold(activeKey)}:`);
         console.log(dim(`(Leave empty to cancel, or type 'undefined' to remove)`));
 
         const rawInput = await promptUser(`> `);
@@ -453,7 +459,7 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
         } else if (rawInput.trim().length > 0) {
           const parsed = parseEditorValue(rawInput, propSchema);
           if (!parsed.ok) {
-            console.error(`Invalid value for ${activeKey}: ${parsed.error}`);
+            console.error(`Invalid value: ${parsed.error}`);
             setupRawMode();
             render();
             return;
