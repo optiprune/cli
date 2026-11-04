@@ -309,7 +309,6 @@ async function runInteractiveMenu(rootName: string, items: MenuItem[]): Promise<
 }
 
 /* --- Schema-Driven Config Editor --- */
-/* --- Schema-Driven Config Editor --- */
 async function runConfigViewer(scope: "global" | "local", rootDir: string) {
   const schema = await loadSchema(rootDir);
   const properties = schema.properties || DEFAULT_CONFIG || {};
@@ -331,6 +330,9 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
 
   return new Promise<void>((resolve) => {
     function setupRawMode() {
+      // Enter alternate buffer and hide the blinking cursor
+      process.stdout.write("\x1b[?1049h\x1b[?25l");
+
       readline.emitKeypressEvents(process.stdin);
       if (process.stdin.isTTY) process.stdin.setRawMode(true);
       process.stdin.resume();
@@ -341,15 +343,18 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
       process.stdin.removeListener("keypress", onKeypress);
       if (process.stdin.isTTY) process.stdin.setRawMode(false);
       process.stdin.pause();
+
+      // Show cursor and switch back to normal buffer (restores terminal cleanly)
+      process.stdout.write("\x1b[?25h\x1b[?1049l");
     }
 
     function render() {
-      // \x1b[2J clears screen, \x1b[3J clears scrollback, \x1b[H resets cursor to top-left
-      process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+      // Move cursor to row 1, col 1, and clear down from cursor
+      process.stdout.write("\x1b[H\x1b[J");
 
       console.log(bold(cyan(`optiprune > config > ${scope}`)));
       console.log(dim(`File: ${filePath}`));
-      console.log(dim(`Page ${currentPage + 1}/${totalPages} — [↑/↓] Select • [←/→] Page • [Enter] Toggle • [d] Reset • [Esc] Back\n`));
+      console.log(dim(`Page ${currentPage + 1}/${totalPages} — [↑/↓] Select  •  [←/→] Page  •  [Enter] Edit/Toggle  •  [d] Reset  •  [Esc] Back\n`));
 
       const pageKeys = keys.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
       const activeKey = pageKeys[selectedIndex];
@@ -363,21 +368,20 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
         console.log(isSelected ? inverse(line) : line);
       });
 
-      // Compact info section (prevents pushing menu off-screen)
+      // Short, capped info box so it never causes vertical line overflows
       if (activeKey && activeDef) {
         console.log("\n" + dim("─".repeat(60)));
         const typeStr = activeDef.type || (activeDef.oneOf ? "union" : "mixed");
         console.log(`${bold(activeKey)} ${dim(`[${typeStr}]`)}`);
-        
+
         if (activeDef.description) {
-          // Truncate long descriptions to 1-2 concise lines
-          const shortDesc = activeDef.description.length > 120 
-            ? activeDef.description.slice(0, 117) + "..." 
+          const desc = activeDef.description.length > 110
+            ? activeDef.description.slice(0, 107) + "..."
             : activeDef.description;
-          console.log(cyan("Info: ") + shortDesc);
+          console.log(cyan("Description: ") + desc);
         }
         if (activeDef.enum) {
-          console.log(yellow("Values: ") + activeDef.enum.map((e: any) => JSON.stringify(e)).join(", "));
+          console.log(yellow("Allowed: ") + activeDef.enum.map((e: any) => JSON.stringify(e)).join(", "));
         }
         if (activeDef.default !== undefined) {
           console.log(dim("Default: ") + JSON.stringify(activeDef.default));
@@ -385,7 +389,6 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
         console.log(dim("─".repeat(60)));
       }
     }
-
     async function onKeypress(_: any, key: any) {
       if ((key.ctrl && key.name === "c") || key.name === "escape") {
         teardownRawMode();
@@ -450,7 +453,8 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
 
         // Case 3: Prompt interactive text for arrays, objects, numbers, and strings
         teardownRawMode();
-        console.log(`\nEnter new value for ${bold(activeKey)}:`);
+
+        console.log(`\nEnter new JSON or literal value for ${bold(activeKey)}:`);
         console.log(dim(`(Leave empty to cancel, or type 'undefined' to remove)`));
 
         const rawInput = await promptUser(`> `);
