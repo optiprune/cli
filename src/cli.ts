@@ -4,10 +4,12 @@ import path from "pathe";
 import fs from "node:fs";
 import os from "node:os";
 import https from "node:https";
+import semver from "semver";
 import readline from "node:readline";
-import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { extractTarGz } from "./safe-tar-extract.js";
+import { selectHighestCompatibleVersion } from "./version-range.js";
 import { assertPluginsExist } from "./plugin-resolution.js";
 
 // @ts-ignore
@@ -22,7 +24,6 @@ const bold    = (s: string) => `\x1b[1m${s}\x1b[0m`;
 const green   = (s: string) => `\x1b[32m${s}\x1b[0m`;
 const yellow  = (s: string) => `\x1b[33m${s}\x1b[0m`;
 const cyan    = (s: string) => `\x1b[36m${s}\x1b[0m`;
-const red     = (s: string) => `\x1b[31m${s}\x1b[0m`;
 const dim     = (s: string) => `\x1b[2m${s}\x1b[0m`;
 const inverse = (s: string) => `\x1b[7m${s}\x1b[0m`;
 
@@ -74,42 +75,11 @@ function getGlobalConfigPath(): string {
 }
 
 function getLocalConfigPath(rootDir: string): string {
-  return path.join(rootDir, "optiprune.config.json");
-}
-
-/* --- Built-in Tar Extractor --- */
-async function extractTarGz(tarGzBuffer: Buffer, targetDir: string): Promise<void> {
-  const tarBuffer = zlib.gunzipSync(tarGzBuffer);
-  let offset = 0;
-
-  while (offset < tarBuffer.length - 512) {
-    const endOffset = offset + 512;
-    const header = tarBuffer.subarray(offset, Math.min(endOffset, tarBuffer.length));
-    if (header.every((byte) => byte === 0)) break;
-
-    const rawName = header.subarray(0, 100).toString("utf-8").replace(/\0/g, "").trim();
-    if (!rawName) break;
-
-    const sizeStr = header.subarray(124, 136).toString("utf-8").replace(/\0/g, "").trim();
-    const size = parseInt(sizeStr, 8) || 0;
-    const typeFlag = String.fromCharCode(header[156] ?? 0);
-
-    const relativePath = rawName.replace(/^package\//, "");
-    const destPath = path.join(targetDir, relativePath);
-
-    offset += 512;
-
-    if (typeFlag === "5" || rawName.endsWith("/")) {
-      if (!fs.existsSync(destPath)) fs.mkdirSync(destPath, { recursive: true });
-    } else if (typeFlag === "0" || typeFlag === "\0") {
-      const fileData = tarBuffer.subarray(offset, offset + size);
-      const parent = path.dirname(destPath);
-      if (!fs.existsSync(parent)) fs.mkdirSync(parent, { recursive: true });
-      fs.writeFileSync(destPath, fileData);
-    }
-
-    offset += Math.ceil(size / 512) * 512;
+  for (const name of ["optiprune.json", "optiprune.jsonc", "optiprune.config.json"]) {
+    const candidate = path.join(rootDir, name);
+    if (fs.existsSync(candidate)) return candidate;
   }
+  return path.join(rootDir, "optiprune.json");
 }
 
 /* --- HTTP Helpers --- */
@@ -120,6 +90,11 @@ function httpsGetBuffer(url: string): Promise<Buffer> {
       if (statusCode >= 300 && statusCode < 400 && res.headers.location) {
         return resolve(httpsGetBuffer(res.headers.location));
       }
+      if (statusCode >= 400) {
+        res.resume();
+        reject(new Error(`HTTP ${statusCode} from ${url}`));
+        return;
+      }
       const chunks: Buffer[] = [];
       res.on("data", (chunk) => chunks.push(chunk));
       res.on("end", () => resolve(Buffer.concat(chunks)));
@@ -127,41 +102,62 @@ function httpsGetBuffer(url: string): Promise<Buffer> {
   });
 }
 
-async function fetchLatestPackageMeta(packageName: string): Promise<{ version: string; tarball: string }> {
-  const raw = await httpsGetBuffer(`https://registry.npmjs.org/${packageName}/latest`);
-  const json = JSON.parse(raw.toString("utf-8"));
-  return {
-    version: json.version,
-    tarball: json.dist.tarball,
+function getDeclaredVersionRange(target: "core" | "cli", rootDir: string, currentVersion: string): string {
+  const fieldRange = (filePath: string, name: string): string | undefined => {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(filePath, "utf8"));
+      return pkg.dependencies?.[name] ?? pkg.devDependencies?.[name] ?? pkg.optionalDependencies?.[name];
+    } catch { return undefined; }
   };
+  const pkgName = target === "core" ? "@optiprune/core" : "@optiprune/cli";
+  const projectRange = fieldRange(path.join(rootDir, "package.json"), pkgName);
+  if (projectRange) return projectRange;
+  if (target === "core") {
+    const cliPackage = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../package.json");
+    const cliRange = fieldRange(cliPackage, pkgName);
+    if (cliRange) return cliRange;
+  }
+  return `^${currentVersion}`;
+}
+
+async function fetchLatestPackageMeta(packageName: string, versionRange: string): Promise<{ version: string; tarball: string }> {
+  const registryUrl = `https://registry.npmjs.org/${encodeURIComponent(packageName)}`;
+  const raw = await httpsGetBuffer(registryUrl);
+  const packument = JSON.parse(raw.toString("utf-8"));
+  const version = selectHighestCompatibleVersion(Object.keys(packument.versions ?? {}), versionRange);
+  if (!version) throw new Error(`No published ${packageName} version matches ${versionRange}`);
+  const packageVersion = packument.versions[version];
+  if (!packageVersion?.dist?.tarball) throw new Error(`Registry metadata for ${packageName}@${version} has no tarball URL`);
+  return { version: packageVersion.version ?? version, tarball: packageVersion.dist.tarball };
 }
 
 async function handleUpdate(target: "core" | "cli", rootDir: string) {
   const pkgName = target === "core" ? "@optiprune/core" : "@optiprune/cli";
   const currentVersion = target === "core" ? getCoreVersion(rootDir) : getCliVersion();
-
-  console.log(`\nChecking updates for ${bold(pkgName)}...`);
+  const versionRange = getDeclaredVersionRange(target, rootDir, currentVersion);
+  console.log(`\nChecking ${bold(pkgName)} updates allowed by ${bold(versionRange)}...`);
   try {
-    const meta = await fetchLatestPackageMeta(pkgName);
-    if (meta.version === currentVersion) {
-      console.log(`${green("✔")} on the latest version (${meta.version})\n`);
+    const meta = await fetchLatestPackageMeta(pkgName, versionRange);
+    if (!semver.gt(meta.version, currentVersion)) {
+      console.log(`${green("✔")} installed version ${currentVersion} is already the newest matching version\n`);
       return;
     }
 
-    console.log(`${yellow("!")} Update available: ${dim(currentVersion)} → ${green(meta.version)}`);
+    console.log(`${yellow("!")} Compatible update available: ${dim(currentVersion)} → ${green(meta.version)}`);
     console.log(`Downloading and installing ${bold(pkgName)}...`);
-
     const tarball = await httpsGetBuffer(meta.tarball);
     let installTarget = path.join(rootDir, "node_modules", ...pkgName.split("/"));
     if (target === "cli") {
       const cliRoot = path.dirname(fileURLToPath(import.meta.url));
       installTarget = path.resolve(cliRoot, "..");
     }
-
     await extractTarGz(tarball, installTarget);
     console.log(`${green("✔")} Successfully updated ${bold(pkgName)} to version ${meta.version}\n`);
   } catch (err: any) {
-    console.error(`${red("✖")} Failed to update: ${err?.message ?? err}\n`);
+    const message = err?.code === "ENOENT"
+      ? "pnpm is required for updates but was not found in PATH. Install pnpm and retry."
+      : (err?.message ?? err);
+    console.error(`${yellow("!")} Update failed: ${message}\n`);
   }
 }
 
@@ -237,6 +233,7 @@ async function runInteractiveMenu(rootName: string, items: MenuItem[]): Promise<
 
   readline.emitKeypressEvents(process.stdin);
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
+  process.stdin.resume();
 
   return new Promise<void>((resolve) => {
     function render() {
@@ -280,8 +277,12 @@ async function runInteractiveMenu(rootName: string, items: MenuItem[]): Promise<
           render();
         } else if (item?.action) {
           cleanup();
-          await item.action();
-          resolve();
+          try {
+            await item.action();
+          } finally {
+            process.stdin.pause();
+            resolve();
+          }
         }
       } else if (key.name === "left" || key.name === "escape") {
         if (breadcrumbs.length > 0) {
@@ -299,6 +300,7 @@ async function runInteractiveMenu(rootName: string, items: MenuItem[]): Promise<
     function cleanup() {
       process.stdin.removeListener("keypress", onKeypress);
       if (process.stdin.isTTY) process.stdin.setRawMode(false);
+      process.stdin.pause();
     }
 
     process.stdin.on("keypress", onKeypress);
@@ -329,12 +331,14 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
     function setupRawMode() {
       readline.emitKeypressEvents(process.stdin);
       if (process.stdin.isTTY) process.stdin.setRawMode(true);
+      process.stdin.resume();
       process.stdin.on("keypress", onKeypress);
     }
 
     function teardownRawMode() {
       process.stdin.removeListener("keypress", onKeypress);
       if (process.stdin.isTTY) process.stdin.setRawMode(false);
+      process.stdin.pause();
     }
 
     function render() {
@@ -447,11 +451,14 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
         if (rawInput === "undefined") {
           delete currentConfig[activeKey];
         } else if (rawInput.trim().length > 0) {
-          try {
-            currentConfig[activeKey] = JSON.parse(rawInput);
-          } catch {
-            currentConfig[activeKey] = rawInput;
+          const parsed = parseEditorValue(rawInput, propSchema);
+          if (!parsed.ok) {
+            console.error(`Invalid value for ${activeKey}: ${parsed.error}`);
+            setupRawMode();
+            render();
+            return;
           }
+          currentConfig[activeKey] = parsed.value;
         }
 
         fs.writeFileSync(filePath, JSON.stringify(currentConfig, null, 2), "utf-8");
@@ -465,6 +472,42 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
   });
 }
 
+function parseEditorValue(raw: string, schema: Record<string, any>): { ok: true; value: unknown } | { ok: false; error: string } {
+  let value: unknown;
+  if (schema.type === "string" && !raw.trim().startsWith('"')) value = raw;
+  else {
+    try { value = JSON.parse(raw); }
+    catch { return { ok: false, error: "enter a value of the type shown, using JSON syntax where needed" }; }
+  }
+  return matchesSchema(value, schema)
+    ? { ok: true, value }
+    : { ok: false, error: "value does not match the property's schema" };
+}
+
+function matchesSchema(value: unknown, schema: Record<string, any>): boolean {
+  if (Array.isArray(schema.oneOf) && !schema.oneOf.some((choice: Record<string, any>) => matchesSchema(value, choice))) return false;
+  if (Array.isArray(schema.enum) && !schema.enum.some((choice: unknown) => Object.is(choice, value))) return false;
+  if (schema.type === "string" && typeof value !== "string") return false;
+  if (schema.type === "boolean" && typeof value !== "boolean") return false;
+  if (schema.type === "number" && (typeof value !== "number" || !Number.isFinite(value))) return false;
+  if (schema.type === "integer" && (typeof value !== "number" || !Number.isInteger(value))) return false;
+  if (typeof value === "number" && schema.minimum !== undefined && value < schema.minimum) return false;
+  if (typeof value === "number" && schema.maximum !== undefined && value > schema.maximum) return false;
+  if (schema.type === "array") {
+    if (!Array.isArray(value)) return false;
+    if (schema.items && !value.every((item) => matchesSchema(item, schema.items))) return false;
+  }
+  if (schema.type === "object") {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const properties = schema.properties ?? {};
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      const childSchema = properties[key] ?? schema.additionalProperties;
+      if (childSchema === false || (childSchema && typeof childSchema === "object" && !matchesSchema(child, childSchema))) return false;
+    }
+  }
+  return true;
+}
+
 /* --- Analysis Logic --- */
 const FIX_TARGETS = new Set(["files", "exports", "dependencies", "devDependencies", "conditions", "json"]);
 const TEST_IGNORE_PATTERNS = ["**/test/**", "**/tests/**", "**/fixtures/**", "**/__tests__/**", "**/*.test.*", "**/*.spec.*"];
@@ -473,20 +516,28 @@ function normalizeVariadicFlags(args: string[], variadicNames: string[]): string
   const result: string[] = [];
   const variadicSet = new Set(variadicNames);
   let currentFlag: string | null = null;
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!;
+  let currentFlagHasValue = false;
+  for (const arg of args) {
     if (arg.startsWith("-")) {
+      if (currentFlag && !currentFlagHasValue) result.push(currentFlag);
       const hasEquals = arg.includes("=");
       const flagName = arg.split("=")[0]!.replace(/^-+/, "");
-      currentFlag = !hasEquals && variadicSet.has(flagName) ? arg : null;
-      result.push(arg);
-    } else if (currentFlag && !arg.startsWith("-")) {
-      result.push(currentFlag, arg);
+      if (!hasEquals && variadicSet.has(flagName)) {
+        currentFlag = arg;
+        currentFlagHasValue = false;
+      } else {
+        currentFlag = null;
+        currentFlagHasValue = false;
+        result.push(arg);
+      }
+    } else if (currentFlag) {
+      result.push(`${currentFlag}=${arg}`);
+      currentFlagHasValue = true;
     } else {
-      currentFlag = null;
       result.push(arg);
     }
   }
+  if (currentFlag && !currentFlagHasValue) result.push(currentFlag);
   return result;
 }
 
@@ -523,7 +574,7 @@ async function runAnalyze(args: string[]) {
       "cache-to": { type: "string" },
       "stop-new-cache-on-update": { type: "boolean" },
     },
-    strict: false,
+    strict: true,
     allowPositionals: false,
   });
 
@@ -660,9 +711,9 @@ async function runAnalyze(args: string[]) {
 
   const report: AnalysisReport = await analyze(finalConfig as AnalyzerOptions);
 
-  if (values.sarif) {
+  if (values.sarif || finalConfig.output === "sarif") {
     console.log(formatSarif(report));
-  } else if (finalConfig.json || values.json) {
+  } else if (finalConfig.output === "json" || finalConfig.json || values.json) {
     console.log(JSON.stringify(report, (k, v) => typeof v === "bigint" ? v.toString() : v, 2));
   } else {
     console.log(formatTerminal(report, { showCycles: Boolean(finalConfig.cycles) }));
@@ -728,6 +779,11 @@ async function main() {
     return;
   }
 
+  if (rawArgs.includes("-h") || rawArgs.includes("--help")) {
+    console.log("OptiPrune — choose an action from the menu.\n\n  prune       Analyze this project\n  config      Edit global or local configuration\n  update      Install the newest version allowed by package.json\n  help        Show this help\n\nUse `optiprune analyze --help` for analysis options. In CI, use `optiprune analyze` explicitly.");
+    return;
+  }
+
   if (rawArgs.length > 0) {
     const firstArg = rawArgs[0];
     if (firstArg === "analyze" || firstArg === "prune") {
@@ -740,6 +796,11 @@ async function main() {
     }
     if (firstArg === "import-cache") {
       await runImportCache(rawArgs.slice(1));
+      return;
+    }
+    if (!["analyze", "prune", "export-cache", "import-cache"].includes(firstArg ?? "") && !firstArg?.startsWith("-")) {
+      console.error(`Unknown command: ${firstArg}. Choose analyze, prune, export-cache, or import-cache.`);
+      process.exitCode = 1;
       return;
     }
     if (firstArg?.startsWith("-")) {
@@ -773,6 +834,12 @@ async function main() {
       ],
     },
     {
+      name: "│ help",
+      action: () => {
+        console.log("OptiPrune analyzes JavaScript and TypeScript projects for unreachable code.\n\nChoose prune to analyze, config to edit settings, or update to install the newest compatible package version.\n\nFor automation, run `optiprune analyze`; help never runs analysis or fixes.");
+      },
+    },
+    {
       name: "update",
       children: [
         {
@@ -791,6 +858,10 @@ async function main() {
     },
   ];
 
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    await runAnalyze([]);
+    return;
+  }
   await runInteractiveMenu("optiprune", menu);
 }
 
