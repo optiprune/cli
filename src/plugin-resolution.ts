@@ -8,6 +8,26 @@ export interface PluginResolution {
   suggestion?: string;
 }
 
+/**
+ * Bundled plugin modules whose exported `plugin.name` differs from the module
+ * filename. The CLI discovers modules by filename, while Core applies plugin
+ * overrides by the exported name, so both spellings must resolve to the name
+ * Core knows.
+ */
+const PLUGIN_NAME_BY_FILE_STEM: Record<string, string> = {
+  "lint-html-plugin": "linthtml-plugin",
+  "markdown-lint-plugin": "markdownlint-plugin",
+  "node-types-plugin": "node-builtin-plugin",
+  "nuxtjs-plugin": "nuxt-plugin",
+  "svelte-kit-plugin": "sveltekit-plugin",
+  "temporal-io-plugin": "temporal-plugin",
+  "webdriver-io-plugin": "webdriverio-plugin",
+};
+
+export function canonicalPluginName(fileStem: string): string {
+  return PLUGIN_NAME_BY_FILE_STEM[fileStem] ?? fileStem;
+}
+
 function normalize(value: string): string {
   return value.trim().toLowerCase().replace(/\\/g, "/").replace(/-plugin$/, "");
 }
@@ -48,7 +68,16 @@ export function discoverPluginNames(): string[] {
 }
 
 export function resolvePlugins(requested: string[], available = discoverPluginNames()): PluginResolution[] {
-  const byNormalized = new Map(available.map((name) => [normalize(name), name]));
+  // Map every accepted spelling (declared name and filename stem) to the
+  // canonical name that Core uses for its `plugins` overrides.
+  const byNormalized = new Map<string, string>();
+  for (const fileStem of available) {
+    const canonical = canonicalPluginName(fileStem);
+    byNormalized.set(normalize(canonical), canonical);
+    const stemKey = normalize(fileStem);
+    if (!byNormalized.has(stemKey)) byNormalized.set(stemKey, canonical);
+  }
+
   return requested.map((value) => {
     const key = normalize(value);
     const canonical = byNormalized.get(key);
@@ -56,10 +85,14 @@ export function resolvePlugins(requested: string[], available = discoverPluginNa
 
     let suggestion: string | undefined;
     let bestScore = Number.POSITIVE_INFINITY;
-    for (const candidate of available) {
-      const candidateKey = normalize(candidate);
-      const score = distance(key, candidateKey);
-      const threshold = Math.max(2, Math.floor(Math.max(key.length, candidateKey.length) * 0.4));
+    for (const fileStem of available) {
+      const candidate = canonicalPluginName(fileStem);
+      const candidateKeys = [normalize(candidate), normalize(fileStem)];
+      const score = Math.min(...candidateKeys.map((candidateKey) => distance(key, candidateKey)));
+      const threshold = Math.max(
+        2,
+        Math.floor(Math.max(key.length, ...candidateKeys.map((candidateKey) => candidateKey.length)) * 0.4),
+      );
       if (score <= threshold && score < bestScore) {
         suggestion = candidate;
         bestScore = score;
