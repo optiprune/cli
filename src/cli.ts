@@ -278,7 +278,7 @@ function promptUser(promptText: string, initialValue: string = ""): Promise<stri
 /* --- Hierarchical Tree CLI Navigation UI --- */
 interface MenuItem {
   name: string;
-  action?: () => Promise<void> | void;
+  action?: () => Promise<"back" | void> | "back" | void;
   children?: MenuItem[];
 }
 
@@ -289,39 +289,90 @@ function renderTreeBranch(prefix: string, isLast: boolean, label: string, isSele
   return `${cursor}${dim(prefix + marker)}${text}`;
 }
 
+function showInteractiveHelp(): Promise<"back"> {
+  return new Promise((resolve) => {
+    process.stdout.write("\x1b[?1049h\x1b[?25l\x1b[H\x1b[J");
+    console.log(bold(cyan("optiprune > help\n")));
+    console.log(
+      "OptiPrune analyzes JavaScript and TypeScript projects for unreachable code.\n\n" +
+      "Choose prune to analyze, config to edit settings, or update to install the newest compatible package version.\n\n" +
+      "For automation, run `optiprune analyze`; help never runs analysis or fixes."
+    );
+    console.log(dim("\n[←/Esc/Enter] Back  •  [Ctrl+C] Exit"));
+
+    readline.emitKeypressEvents(process.stdin);
+    if (process.stdin.isTTY) process.stdin.setRawMode(true);
+    process.stdin.resume();
+
+    const onKey = (_: any, key: any) => {
+      if (!key) return;
+      if (key.ctrl && key.name === "c") {
+        process.stdin.removeListener("keypress", onKey);
+        if (process.stdin.isTTY) process.stdin.setRawMode(false);
+        process.stdout.write("\x1b[?25h\x1b[?1049l");
+        process.exit(0);
+      }
+      if (key.name === "left" || key.name === "escape" || key.name === "return") {
+        process.stdin.removeListener("keypress", onKey);
+        if (process.stdin.isTTY) process.stdin.setRawMode(false);
+        process.stdin.pause();
+        process.stdout.write("\x1b[?25h\x1b[?1049l");
+        resolve("back");
+      }
+    };
+
+    process.stdin.on("keypress", onKey);
+  });
+}
+
 async function runInteractiveMenu(rootName: string, items: MenuItem[]): Promise<void> {
   const breadcrumbs: { name: string; items: MenuItem[]; selectedIndex: number }[] = [];
   let currentItems = items;
   let selectedIndex = 0;
 
-  readline.emitKeypressEvents(process.stdin);
-  if (process.stdin.isTTY) process.stdin.setRawMode(true);
-  process.stdin.resume();
+  let onKeypress: (_: any, key: any) => Promise<void>;
 
-  return new Promise<void>((resolve) => {
-    function render() {
-      process.stdout.write("\x1b[2J\x1b[0f");
-      console.log(bold(cyan(rootName)));
+  function enterAltScreen() {
+    process.stdout.write("\x1b[?1049h\x1b[?25l");
+    readline.emitKeypressEvents(process.stdin);
+    if (process.stdin.isTTY) process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.on("keypress", onKeypress);
+  }
 
-      let indent = "  ";
-      for (let i = 0; i < breadcrumbs.length; i++) {
-        const crumb = breadcrumbs[i]!;
-        const isLastAncestor = i === breadcrumbs.length - 1;
-        console.log(`${"  ".repeat(i + 1)}${dim(isLastAncestor ? "└─ " : "├─ ")}${bold(crumb.name)}`);
-        indent += "     ";
-      }
+  function exitAltScreen() {
+    process.stdin.removeListener("keypress", onKeypress);
+    if (process.stdin.isTTY) process.stdin.setRawMode(false);
+    process.stdin.pause();
+    process.stdout.write("\x1b[?25h\x1b[?1049l");
+  }
 
-      currentItems.forEach((item, idx) => {
-        const isLast = idx === currentItems.length - 1;
-        console.log(renderTreeBranch(indent, isLast, item.name, idx === selectedIndex));
-      });
+  function render() {
+    process.stdout.write("\x1b[H\x1b[J");
+    console.log(bold(cyan(rootName)));
 
-      console.log(dim("\n[↑/↓] Navigate  •  [→/Enter] Select  •  [←/Esc] Back  •  [Ctrl+C] Exit"));
+    let indent = "  ";
+    for (let i = 0; i < breadcrumbs.length; i++) {
+      const crumb = breadcrumbs[i]!;
+      const isLastAncestor = i === breadcrumbs.length - 1;
+      console.log(`${"  ".repeat(i + 1)}${dim(isLastAncestor ? "└─ " : "├─ ")}${bold(crumb.name)}`);
+      indent += "     ";
     }
 
-    async function onKeypress(_: any, key: any) {
+    currentItems.forEach((item, idx) => {
+      const isLast = idx === currentItems.length - 1;
+      console.log(renderTreeBranch(indent, isLast, item.name, idx === selectedIndex));
+    });
+
+    console.log(dim("\n[↑/↓] Navigate  •  [→/Enter] Select  •  [←/Esc] Back  •  [Ctrl+C] Exit"));
+  }
+
+  return new Promise<void>((resolve) => {
+    onKeypress = async (_: any, key: any) => {
+      if (!key) return;
+
       if (key.ctrl && key.name === "c") {
-        cleanup();
+        exitAltScreen();
         process.exit(0);
       }
 
@@ -339,11 +390,19 @@ async function runInteractiveMenu(rootName: string, items: MenuItem[]): Promise<
           selectedIndex = 0;
           render();
         } else if (item?.action) {
-          cleanup();
+          exitAltScreen();
+          let result: "back" | void;
           try {
-            await item.action();
-          } finally {
-            process.stdin.pause();
+            result = await item.action();
+          } catch (err) {
+            resolve();
+            throw err;
+          }
+
+          if (result === "back") {
+            enterAltScreen();
+            render();
+          } else {
             resolve();
           }
         }
@@ -354,19 +413,13 @@ async function runInteractiveMenu(rootName: string, items: MenuItem[]): Promise<
           selectedIndex = parent.selectedIndex;
           render();
         } else {
-          cleanup();
+          exitAltScreen();
           resolve();
         }
       }
-    }
+    };
 
-    function cleanup() {
-      process.stdin.removeListener("keypress", onKeypress);
-      if (process.stdin.isTTY) process.stdin.setRawMode(false);
-      process.stdin.pause();
-    }
-
-    process.stdin.on("keypress", onKeypress);
+    enterAltScreen();
     render();
   });
 }
@@ -452,7 +505,10 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
         console.log(dim("─".repeat(60)));
       }
     }
+
     async function onKeypress(_: any, key: any) {
+      if (!key) return;
+
       if ((key.ctrl && key.name === "c") || key.name === "escape") {
         teardownRawMode();
         resolve();
@@ -853,7 +909,7 @@ async function main() {
   }
 
   if (rawArgs.includes("-h") || rawArgs.includes("--help")) {
-    console.log("OptiPrune — choose an action from the menu.\n\n  prune       Analyze this project\n  config      Edit global or local configuration\n  update      Install the newest version allowed by package.json\n  help        Show this help\n\nUse `optiprune analyze --help` for analysis options. In CI, use `optiprune analyze` explicitly.");
+    console.log("OptiPrune — choose an action from the menu.\n\n  prune        Analyze this project\n  config       Edit global or local configuration\n  update       Install the newest version allowed by package.json\n  help         Show this help\n\nUse `optiprune analyze --help` for analysis options. In CI, use `optiprune analyze` explicitly.");
     return;
   }
 
@@ -906,21 +962,21 @@ async function main() {
           name: "global",
           action: async () => {
             await runConfigViewer("global", rootDir);
+            return "back" as const;
           },
         },
         {
           name: "local",
           action: async () => {
             await runConfigViewer("local", rootDir);
+            return "back" as const;
           },
         },
       ],
     },
     {
       name: "help",
-      action: () => {
-        console.log("OptiPrune analyzes JavaScript and TypeScript projects for unreachable code.\n\nChoose prune to analyze, config to edit settings, or update to install the newest compatible package version.\n\nFor automation, run `optiprune analyze`; help never runs analysis or fixes.");
-      },
+      action: () => showInteractiveHelp(),
     },
     {
       name: "update",
