@@ -58,7 +58,7 @@ function getCoreVersion(rootDir: string): string {
       if (pkg.version) return pkg.version;
     }
   } catch {}
-  return "2.0.0-alpha.1";
+  return "unknown";
 }
 
 function getGlobalConfigDir(): string {
@@ -83,22 +83,79 @@ function getLocalConfigPath(rootDir: string): string {
 }
 
 /* --- HTTP Helpers --- */
-function httpsGetBuffer(url: string): Promise<Buffer> {
+const HTTP_TIMEOUT_MS = 30_000;
+const MAX_REDIRECTS = 5;
+const MAX_RESPONSE_BYTES = 100 * 1024 * 1024;
+
+function httpsGetBuffer(url: string, redirects = 0): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { "User-Agent": "optiprune" } }, (res) => {
+    let settled = false;
+    const finishResolve = (value: Buffer | PromiseLike<Buffer>) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const finishReject = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    let requestUrl: URL;
+    try {
+      requestUrl = new URL(url);
+    } catch {
+      reject(new Error(`Invalid HTTPS URL: ${url}`));
+      return;
+    }
+    if (requestUrl.protocol !== "https:") {
+      reject(new Error(`Only HTTPS URLs are allowed: ${url}`));
+      return;
+    }
+    if (redirects > MAX_REDIRECTS) {
+      reject(new Error(`Too many redirects while fetching ${url}`));
+      return;
+    }
+
+    const request = https.get(requestUrl, {
+      headers: { "User-Agent": "optiprune" },
+      timeout: HTTP_TIMEOUT_MS,
+    }, (res) => {
       const statusCode = res.statusCode ?? 0;
       if (statusCode >= 300 && statusCode < 400 && res.headers.location) {
-        return resolve(httpsGetBuffer(res.headers.location));
+        res.resume();
+        try {
+          const redirectUrl = new URL(res.headers.location, requestUrl);
+          return finishResolve(httpsGetBuffer(redirectUrl.toString(), redirects + 1));
+        } catch {
+          return finishReject(new Error(`Invalid redirect URL from ${url}`));
+        }
       }
       if (statusCode >= 400) {
         res.resume();
-        reject(new Error(`HTTP ${statusCode} from ${url}`));
+        finishReject(new Error(`HTTP ${statusCode} from ${url}`));
         return;
       }
       const chunks: Buffer[] = [];
-      res.on("data", (chunk) => chunks.push(chunk));
-      res.on("end", () => resolve(Buffer.concat(chunks)));
-    }).on("error", reject);
+      let totalBytes = 0;
+      res.on("data", (chunk: Buffer) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_RESPONSE_BYTES) {
+          const error = new Error(`Response exceeds ${MAX_RESPONSE_BYTES} bytes: ${url}`);
+          request.destroy(error);
+          finishReject(error);
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on("error", finishReject);
+      res.on("end", () => finishResolve(Buffer.concat(chunks)));
+    });
+    request.on("timeout", () => {
+      const error = new Error(`Request timed out after ${HTTP_TIMEOUT_MS}ms: ${url}`);
+      request.destroy(error);
+      finishReject(error);
+    });
+    request.on("error", finishReject);
   });
 }
 
@@ -134,6 +191,11 @@ async function fetchLatestPackageMeta(packageName: string, versionRange: string)
 async function handleUpdate(target: "core" | "cli", rootDir: string) {
   const pkgName = target === "core" ? "@optiprune/core" : "@optiprune/cli";
   const currentVersion = target === "core" ? getCoreVersion(rootDir) : getCliVersion();
+  if (!semver.valid(currentVersion)) {
+    console.error(`${yellow("!")} Unable to determine the installed ${pkgName} version; refusing to update it automatically.\n`);
+    process.exitCode = 1;
+    return;
+  }
   const versionRange = getDeclaredVersionRange(target, rootDir, currentVersion);
   console.log(`\nChecking ${bold(pkgName)} updates allowed by ${bold(versionRange)}...`);
   try {
@@ -158,6 +220,7 @@ async function handleUpdate(target: "core" | "cli", rootDir: string) {
       ? "pnpm is required for updates but was not found in PATH. Install pnpm and retry."
       : (err?.message ?? err);
     console.error(`${yellow("!")} Update failed: ${message}\n`);
+    process.exitCode = 1;
   }
 }
 
@@ -806,6 +869,16 @@ async function main() {
     }
     if (firstArg === "import-cache") {
       await runImportCache(rawArgs.slice(1));
+      return;
+    }
+    if (firstArg === "update") {
+      const target = rawArgs[1];
+      if (target !== "core" && target !== "cli") {
+        console.error("Update requires a target: core or cli.");
+        process.exitCode = 1;
+        return;
+      }
+      await handleUpdate(target, rootDir);
       return;
     }
     if (!["analyze", "prune", "export-cache", "import-cache"].includes(firstArg ?? "") && !firstArg?.startsWith("-")) {
