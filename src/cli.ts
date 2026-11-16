@@ -11,6 +11,7 @@ import { parseArgs } from "node:util";
 import { extractTarGz } from "./safe-tar-extract.js";
 import { selectHighestCompatibleVersion } from "./version-range.js";
 import { assertPluginsExist } from "./plugin-resolution.js";
+import { readConfigDocument, writeConfigDocument } from "./config-document.js";
 
 // @ts-ignore
 import { analyze, shouldFail, exportCache, importCache, loadConfig, mergeConfig, DEFAULT_CONFIG } from "@optiprune/core";
@@ -431,12 +432,8 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
   const keys = Object.keys(properties).filter((k) => k !== "$schema");
   const filePath = scope === "global" ? getGlobalConfigPath() : getLocalConfigPath(rootDir);
 
-  let currentConfig: Record<string, any> = {};
-  if (fs.existsSync(filePath)) {
-    try {
-      currentConfig = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    } catch {}
-  }
+  const document = readConfigDocument(filePath);
+  let currentConfig = document.value;
 
   // Reduced page size from 8 to 6 so everything stays well within terminal height
   const PAGE_SIZE = 6;
@@ -470,6 +467,7 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
 
       console.log(bold(cyan(`optiprune > config > ${scope}`)));
       console.log(dim(`File: ${filePath}`));
+      if (document.error) console.log(yellow(`! ${document.error}`));
       console.log(dim(`Page ${currentPage + 1}/${totalPages} — [↑/↓] Select  •  [←/→] Page  •  [Enter] Edit/Toggle  •  [d] Reset  •  [Esc] Back\n`));
 
       const pageKeys = keys.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
@@ -539,8 +537,8 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
         const pageKeys = keys.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE);
         const activeKey = pageKeys[selectedIndex];
         if (activeKey) {
+          writeConfigDocument(filePath, document, activeKey, undefined);
           delete currentConfig[activeKey];
-          fs.writeFileSync(filePath, JSON.stringify(currentConfig, null, 2), "utf-8");
           render();
         }
       } else if (key.name === "return") {
@@ -556,7 +554,7 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
           const current = currentConfig[activeKey] ?? propSchema.default ?? options[0];
           const nextIndex = (options.indexOf(current) + 1) % options.length;
           currentConfig[activeKey] = options[nextIndex];
-          fs.writeFileSync(filePath, JSON.stringify(currentConfig, null, 2), "utf-8");
+          writeConfigDocument(filePath, document, activeKey, options[nextIndex]);
           render();
           return;
         }
@@ -565,7 +563,7 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
         if (propSchema.type === "boolean") {
           const current = currentConfig[activeKey] ?? propSchema.default ?? false;
           currentConfig[activeKey] = !current;
-          fs.writeFileSync(filePath, JSON.stringify(currentConfig, null, 2), "utf-8");
+          writeConfigDocument(filePath, document, activeKey, currentConfig[activeKey]);
           render();
           return;
         }
@@ -590,7 +588,7 @@ async function runConfigViewer(scope: "global" | "local", rootDir: string) {
           currentConfig[activeKey] = parsed.value;
         }
 
-        fs.writeFileSync(filePath, JSON.stringify(currentConfig, null, 2), "utf-8");
+        writeConfigDocument(filePath, document, activeKey, currentConfig[activeKey]);
         setupRawMode();
         render();
       }

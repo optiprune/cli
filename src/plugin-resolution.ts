@@ -8,12 +8,6 @@ export interface PluginResolution {
   suggestion?: string;
 }
 
-/**
- * Bundled plugin modules whose exported `plugin.name` differs from the module
- * filename. The CLI discovers modules by filename, while Core applies plugin
- * overrides by the exported name, so both spellings must resolve to the name
- * Core knows.
- */
 const PLUGIN_NAME_BY_FILE_STEM: Record<string, string> = {
   "lint-html-plugin": "linthtml-plugin",
   "markdown-lint-plugin": "markdownlint-plugin",
@@ -26,6 +20,18 @@ const PLUGIN_NAME_BY_FILE_STEM: Record<string, string> = {
 
 export function canonicalPluginName(fileStem: string): string {
   return PLUGIN_NAME_BY_FILE_STEM[fileStem] ?? fileStem;
+}
+
+function exportedPluginName(pluginPath: string, fileStem: string): string {
+  try {
+    const source = fs.readFileSync(pluginPath, "utf8");
+    const names = [...source.matchAll(/\bname:\s*["']([^"']*-plugin)["']/g)];
+    const match = names.at(-1)?.[1];
+    if (match) return match;
+  } catch {
+    // Keep compatibility aliases when source inspection is unavailable.
+  }
+  return canonicalPluginName(fileStem);
 }
 
 function normalize(value: string): string {
@@ -67,12 +73,28 @@ export function discoverPluginNames(): string[] {
   }
 }
 
+function discoverPluginCanonicalNames(available: string[]): Map<string, string> {
+  const result = new Map<string, string>();
+  try {
+    const require = createRequire(import.meta.url);
+    const corePackage = require.resolve("@optiprune/core/package.json");
+    const pluginDir = path.join(path.dirname(corePackage), "dist", "plugins");
+    const files = fs.readdirSync(pluginDir);
+    for (const fileStem of available) {
+      const file = files.find((candidate) => candidate.startsWith(`${fileStem}.`));
+      result.set(fileStem, file ? exportedPluginName(path.join(pluginDir, file), fileStem) : canonicalPluginName(fileStem));
+    }
+  } catch {
+    for (const fileStem of available) result.set(fileStem, canonicalPluginName(fileStem));
+  }
+  return result;
+}
+
 export function resolvePlugins(requested: string[], available = discoverPluginNames()): PluginResolution[] {
-  // Map every accepted spelling (declared name and filename stem) to the
-  // canonical name that Core uses for its `plugins` overrides.
   const byNormalized = new Map<string, string>();
+  const canonicalNames = discoverPluginCanonicalNames(available);
   for (const fileStem of available) {
-    const canonical = canonicalPluginName(fileStem);
+    const canonical = canonicalNames.get(fileStem) ?? canonicalPluginName(fileStem);
     byNormalized.set(normalize(canonical), canonical);
     const stemKey = normalize(fileStem);
     if (!byNormalized.has(stemKey)) byNormalized.set(stemKey, canonical);
@@ -86,7 +108,7 @@ export function resolvePlugins(requested: string[], available = discoverPluginNa
     let suggestion: string | undefined;
     let bestScore = Number.POSITIVE_INFINITY;
     for (const fileStem of available) {
-      const candidate = canonicalPluginName(fileStem);
+      const candidate = canonicalNames.get(fileStem) ?? canonicalPluginName(fileStem);
       const candidateKeys = [normalize(candidate), normalize(fileStem)];
       const score = Math.min(...candidateKeys.map((candidateKey) => distance(key, candidateKey)));
       const threshold = Math.max(
